@@ -1,17 +1,12 @@
-import Razorpay from 'razorpay'
-import crypto   from 'crypto'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../config/db.js'
 
-const razorpay = new Razorpay({
-  key_id:     process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-})
+import { initiatePhonePePayment, checkPhonePeStatus } from '../config/phonepe.js'
 
 const DOWNLOAD_PRICE = 49900 // ₹499 in paise
 
 // POST /api/payments/order
-// Creates Razorpay order for ₹499 download
+// Creates PhonePe payment for ₹499 download
 export const createOrder = async (req, res) => {
   try {
     const { projectId } = req.body
@@ -25,25 +20,29 @@ export const createOrder = async (req, res) => {
     if (project.status !== 'ready') return res.status(400).json({ error: 'Website is still generating.' })
     if (project.download_paid) return res.status(400).json({ error: 'Download already unlocked.' })
 
-    const order = await razorpay.orders.create({
-      amount:   DOWNLOAD_PRICE,
-      currency: 'INR',
-      receipt:  `zater_dl_${projectId.slice(0,8)}_${Date.now()}`.slice(0, 40),
-      notes:    { projectId, userId: String(req.user.id) },
+    const merchantTransactionId = `zater_dl_${projectId.slice(0, 8)}_${Date.now()}`.slice(0, 40)
+
+    const { redirectUrl } = await initiatePhonePePayment({
+      amountPaise: DOWNLOAD_PRICE,
+      merchantUserId: String(req.user.id),
+      merchantTransactionId,
+      redirectUrl: `${process.env.FRONTEND_URL}/payment/status?txnId=${merchantTransactionId}&projectId=${projectId}`,
+      callbackUrl: `${process.env.BACKEND_URL}/api/payments/callback`,
     })
 
+    // Reusing existing columns: razorpay_order_id stores the PhonePe merchantTransactionId
     await query(
       `INSERT INTO payments (id, user_id, project_id, razorpay_order_id, amount, status)
        VALUES (?,?,?,?,?,'created')`,
-      [uuidv4(), req.user.id, projectId, order.id, DOWNLOAD_PRICE]
+      [uuidv4(), req.user.id, projectId, merchantTransactionId, DOWNLOAD_PRICE]
     )
 
-    console.log(`💳 Download order: ${order.id} for project ${projectId}`)
+    console.log(`💳 PhonePe order: ${merchantTransactionId} for project ${projectId}`)
     res.json({
-      orderId:  order.id,
-      amount:   DOWNLOAD_PRICE,
+      merchantTransactionId,
+      redirectUrl,
+      amount: DOWNLOAD_PRICE,
       currency: 'INR',
-      keyId:    process.env.RAZORPAY_KEY_ID,
     })
   } catch (err) {
     console.error('createOrder:', err)
@@ -52,32 +51,27 @@ export const createOrder = async (req, res) => {
 }
 
 // POST /api/payments/verify
+// Called by your frontend after PhonePe redirects back
 export const verifyPayment = async (req, res) => {
   try {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, projectId } = req.body
+    const { merchantTransactionId, projectId } = req.body
+    if (!merchantTransactionId) return res.status(400).json({ error: 'Missing transaction id.' })
 
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
-      return res.status(400).json({ error: 'Missing payment fields.' })
+    const statusRes = await checkPhonePeStatus(merchantTransactionId)
 
-    // Verify Razorpay HMAC signature
-    const expected = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest('hex')
-
-    if (expected !== razorpay_signature) {
-      await query(`UPDATE payments SET status='failed' WHERE razorpay_order_id=?`, [razorpay_order_id])
-      return res.status(400).json({ error: 'Payment signature invalid. Contact support.' })
+    if (statusRes?.code !== 'PAYMENT_SUCCESS') {
+      await query(`UPDATE payments SET status='failed' WHERE razorpay_order_id=?`, [merchantTransactionId])
+      return res.status(400).json({ error: 'Payment not successful.', code: statusRes?.code })
     }
 
-    // Mark payment paid
+    const providerTxnId = statusRes?.data?.transactionId || merchantTransactionId
+
     await query(
-      `UPDATE payments SET razorpay_payment_id=?, razorpay_signature=?, status='paid'
+      `UPDATE payments SET razorpay_payment_id=?, status='paid'
        WHERE razorpay_order_id=?`,
-      [razorpay_payment_id, razorpay_signature, razorpay_order_id]
+      [providerTxnId, merchantTransactionId]
     )
 
-    // Unlock download on project
     await query(
       `UPDATE projects SET download_paid=1, updated_at=NOW() WHERE id=? AND user_id=?`,
       [projectId, req.user.id]
@@ -88,6 +82,18 @@ export const verifyPayment = async (req, res) => {
   } catch (err) {
     console.error('verifyPayment:', err)
     res.status(500).json({ error: 'Verification failed. Contact support.' })
+  }
+}
+
+// POST /api/payments/callback
+// PhonePe server-to-server callback (optional but recommended)
+export const paymentCallback = async (req, res) => {
+  try {
+    console.log('PhonePe callback received:', req.body)
+    res.status(200).json({ received: true })
+  } catch (err) {
+    console.error('paymentCallback:', err)
+    res.status(500).json({ error: 'Callback handling failed' })
   }
 }
 
