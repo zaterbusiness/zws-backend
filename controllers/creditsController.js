@@ -13,7 +13,7 @@
  */
 
 import { query, queryOne } from '../config/db.js'
-import { initiatePhonePePayment, checkPhonePeStatus } from '../config/phonepe.js'
+import { createCashfreeOrder, checkCashfreeStatus } from '../config/cashfree.js'
 
 const PACKS = {
   pack100: { credits: 100, pricePaise: 99  * 100 },
@@ -74,13 +74,13 @@ export const createUnlockOrder = async (req, res) => {
 
     const merchantTransactionId = `unlock_${req.user.id}_${Date.now()}`
 
-    const { redirectUrl } = await initiatePhonePePayment({
-      amountPaise: UNLOCK_PRICE_PAISE,
-      merchantUserId: String(req.user.id),
-      merchantTransactionId,
-      redirectUrl: `${FRONTEND_URL}/payment/callback?type=unlock&txn=${merchantTransactionId}`,
-      callbackUrl: `${BACKEND_URL}/api/credits/webhook`,
-    })
+   const orderData = await createCashfreeOrder({
+  orderId: merchantTransactionId,
+  amountPaise: UNLOCK_PRICE_PAISE,
+  customerId: String(req.user.id),
+  customerPhone: req.user.phone,
+  returnUrl: `${FRONTEND_URL}/payment/callback?type=unlock&txn=${merchantTransactionId}`,
+})
 
     await query(
       `INSERT INTO payments (id, user_id, phonepe_txn_id, amount, currency, type, status)
@@ -88,12 +88,12 @@ export const createUnlockOrder = async (req, res) => {
       [req.user.id, merchantTransactionId, UNLOCK_PRICE_PAISE]
     )
 
-    res.json({
-      redirectUrl,
-      merchantTransactionId,
-      amount: UNLOCK_PRICE_PAISE,
-      paymentType: 'unlock_payment',
-    })
+   res.json({
+  paymentSessionId: orderData.payment_session_id,
+  merchantTransactionId,
+  amount: UNLOCK_PRICE_PAISE,
+  paymentType: 'unlock_payment',
+})
   } catch (err) {
     console.error('createUnlockOrder:', err)
     res.status(500).json({ error: 'Failed to create unlock order. Please try again.' })
@@ -119,13 +119,13 @@ export const createCreditOrder = async (req, res) => {
     const pack     = PACKS[planKey]
     const merchantTransactionId = `cr_${req.user.id}_${Date.now()}`
 
-    const { redirectUrl } = await initiatePhonePePayment({
-      amountPaise: pack.pricePaise,
-      merchantUserId: String(req.user.id),
-      merchantTransactionId,
-      redirectUrl: `${FRONTEND_URL}/payment/callback?type=credit&plan=${planKey}&txn=${merchantTransactionId}`,
-      callbackUrl: `${BACKEND_URL}/api/credits/webhook`,
-    })
+    const orderData = await createCashfreeOrder({
+  orderId: merchantTransactionId,
+  amountPaise: pack.pricePaise,
+  customerId: String(req.user.id),
+  customerPhone: req.user.phone,
+  returnUrl: `${FRONTEND_URL}/payment/callback?type=credit&plan=${planKey}&txn=${merchantTransactionId}`,
+})
 
     await query(
       `INSERT INTO payments (id, user_id, phonepe_txn_id, amount, currency, type, status)
@@ -134,13 +134,13 @@ export const createCreditOrder = async (req, res) => {
     )
 
     res.json({
-      redirectUrl,
-      merchantTransactionId,
-      amount: pack.pricePaise,
-      creditsToAdd: pack.credits,
-      plan: planKey,
-      paymentType: 'credit_purchase',
-    })
+  paymentSessionId: orderData.payment_session_id,
+  merchantTransactionId,
+  amount: pack.pricePaise,
+  creditsToAdd: pack.credits,
+  plan: planKey,
+  paymentType: 'credit_purchase',
+})
   } catch (err) {
     console.error('createCreditOrder:', err)
     res.status(500).json({ error: 'Failed to create credit order. Please try again.' })
@@ -165,12 +165,12 @@ export const checkPaymentStatus = async (req, res) => {
     )
     if (!payment) return res.status(404).json({ error: 'Payment record not found.' })
 
-    const statusRes = await checkPhonePeStatus(merchantTransactionId)
+    const statusRes = await checkCashfreeStatus(merchantTransactionId)
 
-    if (statusRes?.code !== 'PAYMENT_SUCCESS') {
-      await query('UPDATE payments SET status=? WHERE phonepe_txn_id=?', ['failed', merchantTransactionId])
-      return res.json({ status: 'failed', message: statusRes?.message || 'Payment not completed.' })
-    }
+if (statusRes?.order_status !== 'PAID') {
+  await query('UPDATE payments SET status=? WHERE phonepe_txn_id=?', ['failed', merchantTransactionId])
+  return res.json({ status: 'failed', message: statusRes?.order_status || 'Payment not completed.' })
+}
 
     // ── Finalize based on payment type ──
     if (payment.type === 'unlock_payment') {
@@ -233,10 +233,7 @@ export const checkPaymentStatus = async (req, res) => {
 // POST /api/credits/webhook — PhonePe server-to-server callback
 // (no auth middleware — PhonePe calls this directly)
 // ─────────────────────────────────────────────────────────────
-export const phonepeWebhook = async (req, res) => {
-  // PhonePe posts a base64-encoded response body; you can log/audit here.
-  // Actual finalization still happens via checkPaymentStatus so it's tied to
-  // an authenticated user session — this just acknowledges receipt.
-  console.log('📩 PhonePe webhook received:', req.body)
+export const cashfreeWebhook = async (req, res) => {
+  console.log('📩 Cashfree webhook received:', req.body)
   res.status(200).json({ received: true })
 }

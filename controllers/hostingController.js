@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import fs   from 'fs'
 import path from 'path'
 import { query, queryOne } from '../config/db.js'
-import { initiatePhonePePayment, checkPhonePeStatus } from '../config/phonepe.js'
+import { createCashfreeOrder, checkCashfreeStatus } from '../config/cashfree.js'
 
 const HOSTING_PRICE = 49900 // ₹499 in paise
 const BASE_DOMAIN   = process.env.BASE_DOMAIN || 'zws.com'  // zws.sitename.com

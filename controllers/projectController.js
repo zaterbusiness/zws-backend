@@ -6,7 +6,8 @@ import { deductAfterSuccess } from '../middleware/creditsCheck.js'
 
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-
+// middleware/creditsCheck.js
+export const WEBSITE_GEN_CREDITS = 100 // or whatever the actual cost is
 const AI_PROMPT = `You are Zater AI Studio's expert website generator. Generate complete, stunning, single-file HTML websites.
 STRICT RULES:
 - Return ONLY raw HTML. No markdown, no backticks, no explanation text.
@@ -34,32 +35,32 @@ const generateWithAI = async (prompt) => {
 
 // ── POST /api/projects ────────────────────────────────────────
 export const createProject = async (req, res) => {
+  let id
   try {
     const { prompt, title } = req.body
     if (!prompt?.trim() || prompt.trim().length < 10)
       return res.status(400).json({ error: 'Please describe your website in at least 10 characters.' })
 
-    const id = uuidv4()
+    id = uuidv4()
     const ptitle = title?.trim() || prompt.trim().slice(0, 80)
 
     await query(
-  `INSERT INTO projects (id, user_id, title, prompt, status, download_paid, current_step)
-   VALUES (?, ?, ?, ?, 'generating', 0, 'Analyzing your prompt...')`,
-  [id, req.user.id, ptitle, prompt.trim()]
-)
+      `INSERT INTO projects (id, user_id, title, prompt, status, download_paid, current_step)
+       VALUES (?, ?, ?, ?, 'generating', 0, 'Analyzing your prompt...')`,
+      [id, req.user.id, ptitle, prompt.trim()]
+    )
 
     console.log(`🚀 Project ${id} by user ${req.user.id}`)
     res.status(201).json({ projectId: id, status: 'generating', message: 'Generation started!' })
-
-    // Background generation — deducts credits ONLY on success
-    // Background generation — deducts credits ONLY on success
-    generateWebsite(id, prompt.trim(), req.user.id, WEBSITE_GEN_CREDITS).catch(err =>
-      console.error(`Generation failed ${id}:`, err.message)
-    )
   } catch (err) {
     console.error('createProject:', err)
-    res.status(500).json({ error: 'Failed to create project.' })
+    return res.status(500).json({ error: 'Failed to create project.' })
   }
+
+  // Fired only after response is sent — errors here can never double-send
+  generateWebsite(id, req.body.prompt.trim(), req.user.id, WEBSITE_GEN_CREDITS).catch(err =>
+    console.error(`Generation failed ${id}:`, err.message)
+  )
 }
 
 // ── Background generation ─────────────────────────────────────

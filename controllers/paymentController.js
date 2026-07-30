@@ -1,12 +1,11 @@
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../config/db.js'
-
-import { initiatePhonePePayment, checkPhonePeStatus } from '../config/phonepe.js'
+import { createCashfreeOrder, checkCashfreeStatus } from '../config/cashfree.js'
 
 const DOWNLOAD_PRICE = 49900 // ₹499 in paise
 
 // POST /api/payments/order
-// Creates PhonePe payment for ₹499 download
+// Creates Cashfree payment for ₹499 download
 export const createOrder = async (req, res) => {
   try {
     const { projectId } = req.body
@@ -22,25 +21,25 @@ export const createOrder = async (req, res) => {
 
     const merchantTransactionId = `zater_dl_${projectId.slice(0, 8)}_${Date.now()}`.slice(0, 40)
 
-    const { redirectUrl } = await initiatePhonePePayment({
+    const orderData = await createCashfreeOrder({
+      orderId: merchantTransactionId,
       amountPaise: DOWNLOAD_PRICE,
-      merchantUserId: String(req.user.id),
-      merchantTransactionId,
-      redirectUrl: `${process.env.FRONTEND_URL}/payment/status?txnId=${merchantTransactionId}&projectId=${projectId}`,
-      callbackUrl: `${process.env.BACKEND_URL}/api/payments/callback`,
+      customerId: String(req.user.id),
+      customerPhone: req.user.phone,
+      returnUrl: `${process.env.FRONTEND_URL}/payment/status?txnId=${merchantTransactionId}&projectId=${projectId}`,
     })
 
-    // Reusing existing columns: razorpay_order_id stores the PhonePe merchantTransactionId
+    // Reusing existing columns: razorpay_order_id stores the Cashfree order id
     await query(
       `INSERT INTO payments (id, user_id, project_id, razorpay_order_id, amount, status)
        VALUES (?,?,?,?,?,'created')`,
       [uuidv4(), req.user.id, projectId, merchantTransactionId, DOWNLOAD_PRICE]
     )
 
-    console.log(`💳 PhonePe order: ${merchantTransactionId} for project ${projectId}`)
+    console.log(`💳 Cashfree order: ${merchantTransactionId} for project ${projectId}`)
     res.json({
       merchantTransactionId,
-      redirectUrl,
+      paymentSessionId: orderData.payment_session_id,
       amount: DOWNLOAD_PRICE,
       currency: 'INR',
     })
@@ -51,20 +50,20 @@ export const createOrder = async (req, res) => {
 }
 
 // POST /api/payments/verify
-// Called by your frontend after PhonePe redirects back
+// Called by your frontend after Cashfree redirects back
 export const verifyPayment = async (req, res) => {
   try {
     const { merchantTransactionId, projectId } = req.body
     if (!merchantTransactionId) return res.status(400).json({ error: 'Missing transaction id.' })
 
-    const statusRes = await checkPhonePeStatus(merchantTransactionId)
+    const statusRes = await checkCashfreeStatus(merchantTransactionId)
 
-    if (statusRes?.code !== 'PAYMENT_SUCCESS') {
+    if (statusRes?.order_status !== 'PAID') {
       await query(`UPDATE payments SET status='failed' WHERE razorpay_order_id=?`, [merchantTransactionId])
-      return res.status(400).json({ error: 'Payment not successful.', code: statusRes?.code })
+      return res.status(400).json({ error: 'Payment not successful.', status: statusRes?.order_status })
     }
 
-    const providerTxnId = statusRes?.data?.transactionId || merchantTransactionId
+    const providerTxnId = statusRes?.cf_order_id || merchantTransactionId
 
     await query(
       `UPDATE payments SET razorpay_payment_id=?, status='paid'
@@ -86,10 +85,10 @@ export const verifyPayment = async (req, res) => {
 }
 
 // POST /api/payments/callback
-// PhonePe server-to-server callback (optional but recommended)
+// Cashfree server-to-server callback (optional but recommended)
 export const paymentCallback = async (req, res) => {
   try {
-    console.log('PhonePe callback received:', req.body)
+    console.log('Cashfree callback received:', req.body)
     res.status(200).json({ received: true })
   } catch (err) {
     console.error('paymentCallback:', err)
