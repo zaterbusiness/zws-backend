@@ -94,7 +94,37 @@ export const signup = async (req, res) => {
     res.status(500).json({ error: 'Registration failed. Please try again.' })
   }
 }
+// ── POST /api/auth/change-password ──────────────────────────
+export const changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body
+    if (!currentPassword || !newPassword)
+      return res.status(400).json({ error: 'Current password and new password are required.' })
 
+    const user = await queryOne('SELECT * FROM users WHERE id=?', [req.user.id])
+    if (!user) return res.status(404).json({ error: 'User not found.' })
+
+    if (user.google_id && !user.password)
+      return res.status(400).json({ error: 'Password change is not available for Google-linked accounts.' })
+
+    const isValid = await bcrypt.compare(currentPassword, user.password)
+    if (!isValid)
+      return res.status(401).json({ error: 'Current password is incorrect.' })
+
+    const pwErrors = validatePassword(newPassword)
+    if (pwErrors.length > 0)
+      return res.status(400).json({ error: `Password must have: ${pwErrors.join(', ')}.`, passwordErrors: pwErrors })
+
+    const hashedPassword = await bcrypt.hash(newPassword, 12)
+    await query('UPDATE users SET password=? WHERE id=?', [hashedPassword, user.id])
+
+    console.log(`✅ Password changed for user ${user.id}`)
+    res.json({ message: 'Password changed successfully.' })
+  } catch (err) {
+    console.error('changePassword:', err)
+    res.status(500).json({ error: 'Failed to change password. Please try again.' })
+  }
+}
 // ── POST /api/auth/login ─────────────────────────────────────
 export const login = async (req, res) => {
   try {

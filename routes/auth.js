@@ -2,7 +2,7 @@ import { Router } from 'express'
 import {
   signup, login, getMe, getCredits,
   forgotPassword, resetPassword, validateResetToken,
-  googleAuth
+  googleAuth, changePassword
 } from '../controllers/authController.js'
 import { protect } from '../middleware/auth.js'
 
@@ -16,5 +16,6 @@ router.get('/credits',               protect, getCredits)        // ← NEW: qui
 router.post('/forgot-password',      forgotPassword)
 router.post('/reset-password',       resetPassword)
 router.post('/validate-reset-token', validateResetToken)
+router.post('/change-password',      protect, changePassword)   // ← NEW
 
 export default router
