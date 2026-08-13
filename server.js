@@ -14,6 +14,14 @@ import adminRoutes from './routes/admin.js'
 import adsRoutes from './routes/ads.js'
 import hostingRoutes from './routes/hosting.js'
 import deployRoutes from './routes/deploy.js'
+import analyticsRoutes from './routes/analytics.js'
+// ...
+
+
+// Public, no-credentials CORS just for the tracking beacon —
+// must be registered before the global cors() middleware
+
+
 
 
 import creditsRouter from './routes/credits.js'
@@ -30,9 +38,8 @@ const app       = express()
 const PORT      = process.env.PORT || 5000
 const HOSTED_DIR = process.env.HOSTED_DIR || path.join(__dirname, 'hosted_sites')
 
-
-
-
+// Public, no-credentials CORS just for the tracking beacon — must come before global cors()
+app.use('/api/analytics/track', cors({ origin: true, credentials: false }))
 
 app.use(cors({
   origin:         process.env.FRONTEND_URL || 'http://localhost:5173',
@@ -68,7 +75,7 @@ app.use('/api/admin',    adminRoutes)
 app.use('/api/ads',      adsRoutes)
 app.use('/api/claude',   claudeRoutes)   // ← add here
 app.use('/api', deployRoutes)
-
+app.use('/api/analytics', analyticsRoutes)
 // After app.use('/sites', express.static(HOSTED_DIR)):
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')))
 
@@ -79,7 +86,7 @@ app.use('/sites', express.static(HOSTED_DIR))
 
 app.use((req, res) => res.status(404).json({ error: `Not found: ${req.method} ${req.path}` }))
 app.use((err, _req, res, _next) => { console.error(err); res.status(500).json({ error: 'Server error' }) })
-
+app.use('/api/analytics/track', cors({ origin: true, credentials: false }))
 const start = async () => {
   const ok = await testConnection()
   if (!ok) { console.error('Fix MySQL then restart.'); process.exit(1) }

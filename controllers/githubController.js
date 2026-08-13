@@ -1,6 +1,8 @@
 // controllers/githubController.js
+// controllers/githubController.js
 import { Octokit } from '@octokit/rest'
 import db          from '../config/db.js'
+import { injectTrackingScript } from './analyticsController.js'   // ← add this import
 
 const REPO_NAME = 'zater-sites'
 const wait = ms => new Promise(r => setTimeout(r, ms))
@@ -300,7 +302,13 @@ export async function deployToGithubPages(req, res) {
     }
 
     console.log(`[GitHub] HTML to deploy: ${html.length} chars`)
+console.log(`[GitHub] HTML to deploy: ${html.length} chars`)
 
+    // Inject view-tracking beacon before pushing to GitHub
+    if (projectId) {
+      html = injectTrackingScript(html, projectId)
+      console.log(`[GitHub] Tracking script injected for project ${projectId}`)
+    }
     // 3. Build namespaced folder path
     //    Structure: user-{userId}/{templateSlug}/{projectId}/index.html
     //    This ensures every user's sites are completely isolated.

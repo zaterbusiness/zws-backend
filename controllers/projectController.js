@@ -3,7 +3,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../config/db.js'
 import { deductAfterSuccess } from '../middleware/creditsCheck.js'
-
+import { injectTrackingScript } from './analyticsController.js'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // middleware/creditsCheck.js
@@ -82,7 +82,12 @@ const generateWebsite = async (projectId, prompt, userId, creditAmount) => {
       .trim()
 
     if (!html || html.length < 100) throw new Error('HTML too short or empty')
+const trackedHtml = injectTrackingScript(html, projectId)
 
+    await query(
+      `UPDATE projects SET generated_html=?, status='ready', current_step=NULL, updated_at=NOW() WHERE id=?`,
+      [trackedHtml, projectId]   // was: [html, projectId]
+    )
     await query(`UPDATE projects SET current_step=? WHERE id=?`,
       ['Finalizing your website...', projectId])
 
