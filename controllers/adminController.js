@@ -1,7 +1,59 @@
 import { query, queryOne } from '../config/db.js'
 import bcrypt from 'bcryptjs'
 import jwt    from 'jsonwebtoken'
+import { pushFullProjectToGithub } from '../services/deployService.js'
 
+// ── GET /api/admin/apps ───────────────────────────────────────
+export const getAppsAdmin = async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 24 } = req.query
+    const offset = (Number(page) - 1) * Number(limit)
+    const where  = search ? 'WHERE a.title LIKE ? OR u.name LIKE ? OR u.email LIKE ?' : ''
+    const params = search ? [`%${search}%`, `%${search}%`, `%${search}%`] : []
+
+    const apps = await query(`
+      SELECT a.id, a.title, a.prompt, a.status,
+             COALESCE(a.github_repo_url,'') AS github_repo_url,
+             a.created_at,
+             u.id AS user_id, u.name AS user_name, u.email AS user_email,
+             COALESCE(u.avatar,'') AS user_avatar
+      FROM apps a JOIN users u ON u.id = a.user_id
+      ${where}
+      ORDER BY a.created_at DESC
+      LIMIT ${Number(limit)} OFFSET ${offset}
+    `, params)
+
+    const [{ total }] = await query(`
+      SELECT COUNT(*) AS total FROM apps a JOIN users u ON u.id=a.user_id ${where}
+    `, params)
+
+    res.json({ apps, total: Number(total) })
+  } catch (err) {
+    console.error('getAppsAdmin:', err)
+    res.status(500).json({ error: 'Failed to fetch apps.' })
+  }
+}
+
+// ── POST /api/admin/apps/:id/github-push ────────────────────────
+export const pushAppToGithubAdmin = async (req, res) => {
+  try {
+    const a = await queryOne('SELECT * FROM apps WHERE id = ?', [req.params.id])
+    if (!a) return res.status(404).json({ error: 'App not found.' })
+    if (a.status !== 'ready') return res.status(400).json({ error: 'App is not ready yet.' })
+    if (a.github_repo_url) return res.json({ url: a.github_repo_url, alreadyPushed: true })
+
+    const files = a.frontend_files
+      ? (typeof a.frontend_files === 'string' ? JSON.parse(a.frontend_files) : a.frontend_files)
+      : { 'src/App.jsx': a.frontend }
+
+    const { repoUrl } = await pushFullProjectToGithub(a, files)
+    await query('UPDATE apps SET github_repo_url=?, updated_at=NOW() WHERE id=?', [repoUrl, a.id])
+    res.json({ url: repoUrl })
+  } catch (err) {
+    console.error('pushAppToGithubAdmin:', err)
+    res.status(500).json({ error: 'GitHub push failed: ' + err.message })
+  }
+}
 // ── POST /api/admin/login ─────────────────────────────────────
 export const adminLogin = async (req, res) => {
   try {

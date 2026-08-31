@@ -53,6 +53,96 @@ const createTransporter = () =>
     tls:    { rejectUnauthorized: false },
   })
 
+
+  // ── POST /api/auth/send-otp ───────────────────────────────────
+export const sendEmailOTP = async (req, res) => {
+  try {
+    const { email } = req.body
+    if (!email?.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({ error: 'Please enter a valid email address.' })
+
+    const otp       = String(Math.floor(100000 + Math.random() * 900000))
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000) // 10 min
+
+    await query('DELETE FROM email_otps WHERE email=?', [email.toLowerCase()])
+    await query(
+      'INSERT INTO email_otps (email, otp, expires_at) VALUES (?,?,?)',
+      [email.toLowerCase(), otp, expiresAt]
+    )
+
+    const transporter = createTransporter()
+    await transporter.sendMail({
+      from:    `"Zater Web Studio" <${process.env.SMTP_USER}>`,
+      to:      email,
+      subject: `${otp} is your Zater login code`,
+      html: `<body style="font-family:system-ui;background:#f4f4f8;margin:0;padding:20px;">
+        <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;">
+          <div style="background:#0a0a12;padding:24px;text-align:center;">
+            <h1 style="color:#fff;margin:0;font-size:20px;">Zater Web Studio</h1>
+          </div>
+          <div style="padding:32px;text-align:center;">
+            <p style="color:#72727f;font-size:14px;">Your one-time login code is:</p>
+            <div style="font-size:34px;font-weight:900;letter-spacing:8px;color:#0a0a12;margin:16px 0;">${otp}</div>
+            <p style="color:#a0a0b0;font-size:12px;">Expires in 10 minutes. If you didn't request this, ignore this email.</p>
+          </div>
+        </div></body>`,
+    })
+
+    console.log(`📧 OTP sent to: ${email}`)
+    res.json({ message: 'OTP sent to your email.' })
+  } catch (err) {
+    console.error('sendEmailOTP:', err)
+    res.status(500).json({ error: 'Failed to send OTP. Please try again.' })
+  }
+}
+
+// ── POST /api/auth/verify-otp ─────────────────────────────────
+export const verifyEmailOTP = async (req, res) => {
+  try {
+    const { email, otp } = req.body
+    if (!email?.trim() || !otp?.trim())
+      return res.status(400).json({ error: 'Email and OTP are required.' })
+
+    const record = await queryOne(
+      `SELECT * FROM email_otps WHERE email=? AND otp=? AND used=0 AND expires_at > NOW()`,
+      [email.toLowerCase(), otp.trim()]
+    )
+    if (!record)
+      return res.status(400).json({ error: 'Invalid or expired OTP.' })
+
+    await query('UPDATE email_otps SET used=1 WHERE id=?', [record.id])
+
+    let user = await queryOne('SELECT * FROM users WHERE email=?', [email.toLowerCase()])
+
+    if (!user) {
+      // New user — auto-create, same as Google flow
+      const avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)]
+      const role   = isAdminEmail(email) ? 'admin' : 'user'
+      const name   = email.split('@')[0]
+      const result = await query(
+        'INSERT INTO users (name, email, password, avatar, credits, role) VALUES (?,?,?,?,?,?)',
+        [name, email.toLowerCase(), '', avatar, SIGNUP_CREDITS, role]
+      )
+      user = await queryOne('SELECT * FROM users WHERE id=?', [result.insertId])
+      query('INSERT INTO credit_transactions (user_id, type, amount, reason, balance_after) VALUES (?,?,?,?,?)',
+        [user.id, 'earn', SIGNUP_CREDITS, 'signup_bonus', SIGNUP_CREDITS]).catch(() => {})
+      console.log(`✅ New OTP user: ${email} (+${SIGNUP_CREDITS} credits) [role: ${role}]`)
+    } else if (isAdminEmail(email) && user.role !== 'admin') {
+      await query('UPDATE users SET role=? WHERE id=?', ['admin', user.id])
+      user.role = 'admin'
+    }
+
+    if (user.status === 'paused')
+      return res.status(403).json({ error: 'Your account has been paused. Contact support.' })
+
+    const token = signToken(user)
+    console.log(`✅ OTP login: ${email} [role: ${user.role}]`)
+    res.json({ token, user: safeUser(user) })
+  } catch (err) {
+    console.error('verifyEmailOTP:', err)
+    res.status(500).json({ error: 'OTP verification failed. Please try again.' })
+  }
+}
 // ── POST /api/auth/signup ────────────────────────────────────
 export const signup = async (req, res) => {
   try {

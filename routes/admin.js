@@ -3,7 +3,7 @@ import {
   getDashboard, getUsers, getUserDetail, getFullUserDetail,
   updateUserRole, updateUserStatus, deleteUser,
   getProjects, getPayments, getRealtimeStats, adminLogin,
-  getTemplateDeployments
+  getTemplateDeployments, getAppsAdmin, pushAppToGithubAdmin   // ← added
 } from '../controllers/adminController.js'
 import { getCreditUsers, adjustCredits, setCredits } from '../controllers/adminCreditsController.js'
 import { adminProtect } from '../middleware/adminAuth.js'
@@ -57,5 +57,7 @@ router.get('/templates',          getTemplateDeployments)
 router.get('/credits/users',      getCreditUsers)
 router.post('/credits/adjust',    adjustCredits)
 router.post('/credits/set',       setCredits)
+router.get('/apps',                    getAppsAdmin)
+router.post('/apps/:id/github-push',   pushAppToGithubAdmin)
 
 export default router

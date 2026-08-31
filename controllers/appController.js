@@ -4,7 +4,24 @@ import { query, queryOne } from '../config/db.js'
 import { createRequire } from 'module'
 
 import { Client } from 'pg'
-
+import { pushFullProjectToGithub } from '../services/deployService.js'
+export const pushToGithub = async (req, res) => {
+  try {
+    const a = await queryOne('SELECT * FROM apps WHERE id = ? AND user_id = ?', [req.params.id, req.user.id])
+    if (!a) return res.status(404).json({ error: 'App not found.' })
+    if (a.status !== 'ready') return res.status(400).json({ error: 'App is not ready yet.' })
+    if (a.github_repo_url) return res.json({ url: a.github_repo_url, alreadyPushed: true })
+    const files = a.frontend_files
+      ? (typeof a.frontend_files === 'string' ? JSON.parse(a.frontend_files) : a.frontend_files)
+      : { 'src/App.jsx': a.frontend }
+    const { repoUrl } = await pushFullProjectToGithub(a, files)
+    await query('UPDATE apps SET github_repo_url=?, updated_at=NOW() WHERE id=?', [repoUrl, a.id])
+    res.json({ url: repoUrl })
+  } catch (err) {
+    console.error('pushToGithub error:', err)
+    res.status(500).json({ error: 'GitHub push failed: ' + err.message })
+  }
+}
 
 const require = createRequire(import.meta.url)
 

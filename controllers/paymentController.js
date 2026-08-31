@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../config/db.js'
-import { createCashfreeOrder, checkCashfreeStatus } from '../config/cashfree.js'
+import { createRazorpayOrder, verifyRazorpaySignature, verifyWebhookSignature } from '../config/razorpay.js'
 
 const DOWNLOAD_PRICE = 49900 // ₹499 in paise
 
@@ -21,28 +21,26 @@ export const createOrder = async (req, res) => {
 
     const merchantTransactionId = `zater_dl_${projectId.slice(0, 8)}_${Date.now()}`.slice(0, 40)
 
-    const orderData = await createCashfreeOrder({
-      orderId: merchantTransactionId,
-      amountPaise: DOWNLOAD_PRICE,
-      customerId: String(req.user.id),
-      customerPhone: req.user.phone,
-      returnUrl: `${process.env.FRONTEND_URL}/payment/status?txnId=${merchantTransactionId}&projectId=${projectId}`,
-    })
+    // inside createOrder — replace the createCashfreeOrder call + response
+const orderData = await createRazorpayOrder({
+  orderId: merchantTransactionId,
+  amountPaise: DOWNLOAD_PRICE,
+  notes: { userId: String(req.user.id), projectId },
+})
 
-    // Reusing existing columns: razorpay_order_id stores the Cashfree order id
-    await query(
-      `INSERT INTO payments (id, user_id, project_id, razorpay_order_id, amount, status)
-       VALUES (?,?,?,?,?,'created')`,
-      [uuidv4(), req.user.id, projectId, merchantTransactionId, DOWNLOAD_PRICE]
-    )
+await query(
+  `INSERT INTO payments (id, user_id, project_id, razorpay_order_id, amount, status)
+   VALUES (?,?,?,?,?,'created')`,
+  [uuidv4(), req.user.id, projectId, orderData.id, DOWNLOAD_PRICE]
+)
 
-    console.log(`💳 Cashfree order: ${merchantTransactionId} for project ${projectId}`)
-    res.json({
-      merchantTransactionId,
-      paymentSessionId: orderData.payment_session_id,
-      amount: DOWNLOAD_PRICE,
-      currency: 'INR',
-    })
+console.log(`💳 Razorpay order: ${orderData.id} for project ${projectId}`)
+res.json({
+  razorpayOrderId: orderData.id,
+  razorpayKeyId: process.env.RAZORPAY_KEY_ID,   // frontend needs this to open Checkout
+  amount: DOWNLOAD_PRICE,
+  currency: 'INR',
+})
   } catch (err) {
     console.error('createOrder:', err)
     res.status(500).json({ error: 'Payment setup failed. Please try again.' })
@@ -51,48 +49,108 @@ export const createOrder = async (req, res) => {
 
 // POST /api/payments/verify
 // Called by your frontend after Cashfree redirects back
+// verifyPayment is now signature-based, not a status poll — replace the whole function body
+// checkPaymentStatus becomes verifyAndFinalize — signature check replaces checkCashfreeStatus poll
+// POST /api/payments/verify
+// Called by frontend after Razorpay Checkout succeeds — signature-based, not a status poll
+// ─────────────────────────────────────────────────────────────
+// POST /api/credits/verify
+// Called by frontend after Razorpay Checkout succeeds
+// ─────────────────────────────────────────────────────────────
 export const verifyPayment = async (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body
   try {
-    const { merchantTransactionId, projectId } = req.body
-    if (!merchantTransactionId) return res.status(400).json({ error: 'Missing transaction id.' })
-
-    const statusRes = await checkCashfreeStatus(merchantTransactionId)
-
-    if (statusRes?.order_status !== 'PAID') {
-      await query(`UPDATE payments SET status='failed' WHERE razorpay_order_id=?`, [merchantTransactionId])
-      return res.status(400).json({ error: 'Payment not successful.', status: statusRes?.order_status })
+    if (await isDuplicatePayment(razorpay_order_id)) {
+      return res.json({ status: 'already_processed' })
     }
 
-    const providerTxnId = statusRes?.cf_order_id || merchantTransactionId
-
-    await query(
-      `UPDATE payments SET razorpay_payment_id=?, status='paid'
-       WHERE razorpay_order_id=?`,
-      [providerTxnId, merchantTransactionId]
+    const payment = await queryOne(
+      'SELECT * FROM payments WHERE phonepe_txn_id=? AND user_id=?',
+      [razorpay_order_id, req.user.id]
     )
+    if (!payment) return res.status(404).json({ error: 'Payment record not found.' })
 
-    await query(
-      `UPDATE projects SET download_paid=1, updated_at=NOW() WHERE id=? AND user_id=?`,
-      [projectId, req.user.id]
-    )
+    const valid = verifyRazorpaySignature({
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+    })
 
-    console.log(`✅ Download unlocked: ${projectId}`)
-    res.json({ success: true, message: 'Payment successful! You can now download your website.' })
+    if (!valid) {
+      await query('UPDATE payments SET status=? WHERE phonepe_txn_id=?', ['failed', razorpay_order_id])
+      return res.json({ status: 'failed', message: 'Signature verification failed.' })
+    }
+
+    // ── Finalize based on payment type ──
+    if (payment.type === 'unlock_payment') {
+      await query('UPDATE users SET has_paid = 1 WHERE id=?', [req.user.id])
+      const currentUser = await queryOne('SELECT credits FROM users WHERE id=?', [req.user.id])
+
+      try {
+        await query(
+          `INSERT INTO credit_transactions (user_id, type, amount, reason, ref_id, balance_after)
+           VALUES (?, 'unlock', 0, 'unlock_payment', ?, ?)`,
+          [req.user.id, razorpay_order_id, currentUser.credits]
+        )
+      } catch {}
+
+      await query('UPDATE payments SET razorpay_payment_id=?, status=? WHERE phonepe_txn_id=?', [razorpay_payment_id, 'paid', razorpay_order_id])
+
+      return res.json({
+        status: 'paid',
+        message: 'Download and hosting unlocked successfully!',
+        has_paid: true,
+        credits: currentUser.credits,
+      })
+    }
+
+    if (payment.type === 'credit_purchase') {
+      const planKey = Object.keys(PACKS).find(k => PACKS[k].pricePaise === payment.amount) || DEFAULT_PACK
+      const creditsToAdd = PACKS[planKey].credits
+
+      await query('UPDATE users SET credits = credits + ? WHERE id=?', [creditsToAdd, req.user.id])
+      const updatedUser = await queryOne('SELECT credits FROM users WHERE id=?', [req.user.id])
+
+      try {
+        await query(
+          `INSERT INTO credit_transactions (user_id, type, amount, reason, ref_id, balance_after)
+           VALUES (?, 'earn', ?, 'credit_purchase', ?, ?)`,
+          [req.user.id, creditsToAdd, razorpay_order_id, updatedUser.credits]
+        )
+      } catch {}
+
+      await query('UPDATE payments SET razorpay_payment_id=?, status=? WHERE phonepe_txn_id=?', [razorpay_payment_id, 'paid', razorpay_order_id])
+
+      return res.json({
+        status: 'paid',
+        message: `${creditsToAdd} credits added to your account!`,
+        creditsAdded: creditsToAdd,
+        newBalance: updatedUser.credits,
+        has_paid: true,
+      })
+    }
+
+    res.status(400).json({ error: 'Unknown payment type.' })
   } catch (err) {
-    console.error('verifyPayment:', err)
-    res.status(500).json({ error: 'Verification failed. Contact support.' })
+    console.error('verifyAndFinalize:', err)
+    res.status(500).json({ error: 'Failed to verify payment. Contact support.' })
   }
 }
 
-// POST /api/payments/callback
-// Cashfree server-to-server callback (optional but recommended)
-export const paymentCallback = async (req, res) => {
+// ─────────────────────────────────────────────────────────────
+// POST /api/credits/webhook — Razorpay server-to-server callback
+// ─────────────────────────────────────────────────────────────
+export const razorpayWebhook = async (req, res) => {
   try {
-    console.log('Cashfree callback received:', req.body)
+    const signature = req.headers['x-razorpay-signature']
+    const valid = verifyWebhookSignature(JSON.stringify(req.body), signature)
+    if (!valid) return res.status(400).json({ error: 'Invalid signature' })
+
+    console.log('📩 Razorpay webhook received:', req.body.event)
     res.status(200).json({ received: true })
   } catch (err) {
-    console.error('paymentCallback:', err)
-    res.status(500).json({ error: 'Callback handling failed' })
+    console.error('razorpayWebhook:', err)
+    res.status(500).json({ error: 'Webhook handling failed' })
   }
 }
 

@@ -8,6 +8,8 @@ import {
   checkDeployStatus
 } from '../controllers/appController.js' 
 import { protect } from '../middleware/auth.js'
+import { pushToGithub } from '../controllers/appController.js'
+// ...
 
 
 
@@ -32,7 +34,7 @@ router.post('/:id/deploy',        deployApp)          // ← this was missing he
 router.post('/:id/domain',          connectCustomDomain)
 router.get('/:id/domain/status',    checkDomainStatus)
 router.delete('/:id/domain',        removeCustomDomain)
-
+router.post('/:id/github-push', pushToGithub)
 router.delete('/:id/deploy',      undeployApp)   // ← new: remove deployment only
 router.get('/:id/deploy-status',  checkDeployStatus)   // ← fixed: was '/apps/:id/deploy-status', which double-prefixed to /apps/apps/:id/... since this router is already mounted at /apps
 export default router

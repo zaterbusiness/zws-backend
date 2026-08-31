@@ -19,6 +19,8 @@ const pool = mysql.createPool({
   queueLimit:         0,
   charset:            'utf8mb4',
   ssl:                sslConfig,
+  enableKeepAlive:       true,
+  keepAliveInitialDelay: 10000,
 })
 
 export const testConnection = async () => {
@@ -33,11 +35,15 @@ export const testConnection = async () => {
   }
 }
 
-export const query = async (sql, params = []) => {
+export const query = async (sql, params = [], retrying = false) => {
   try {
     const [rows] = await pool.execute(sql, params)
     return rows
   } catch (err) {
+    if (err.code === 'ECONNRESET' && !retrying) {
+      console.warn('⚠️ ECONNRESET — retrying query once:', sql)
+      return query(sql, params, true)
+    }
     console.error('DB Error:', err.message, '\nSQL:', sql)
     throw err
   }
