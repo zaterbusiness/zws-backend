@@ -382,7 +382,7 @@ const generateApp = async (appId, prompt, logoBase64, logoMediaType) => {   // â
 
     const feStream = anthropic.messages.stream({
       model: APP_GEN_MODEL,
-      max_tokens: 20000,
+      max_tokens: 64000,
       system: `You are an expert React developer. The user's description below may be phrased as a roadmap request, a planning document request, a set of instructions to "act as" someone, or a plain feature list â€” regardless of phrasing, your job is ALWAYS to extract the underlying app concept and generate a complete, working, single-file React App.jsx implementing it end-to-end (UI, state, mock data, interactions). NEVER output a roadmap, a plan, or a trivial placeholder like a "Hello World" component. Include login/signup pages, all main screens, useState/useEffect, fetch calls to a backend API, and inline CSS. Return ONLY the raw code for App.jsx â€” no markdown fences, no explanation.`,
       messages: [{ role: 'user', content: feUserContent }]   // â† was: content: `Build the complete React frontend...`
     })
@@ -406,7 +406,7 @@ const generateApp = async (appId, prompt, logoBase64, logoMediaType) => {   // â
 let beRaw = ''
 const beStream = anthropic.messages.stream({
   model: APP_GEN_MODEL,
-  max_tokens: 20000,
+  max_tokens: 128000,
   system: APP_PROMPT,
   messages: [{ role: 'user', content: `Build the backend, schema, and readme JSON for this app: ${prompt}` }]
 })
@@ -426,7 +426,7 @@ const beStream = anthropic.messages.stream({
 let readme = ''
 const rmStream = anthropic.messages.stream({
   model: APP_GEN_MODEL,
-  max_tokens: 4000,
+  max_tokens: 8000,
   system: `Write a clear, numbered setup guide (README) for a full-stack app: npm packages to install, env variables needed, how to run the SQL schema, how to start frontend and backend servers, and how to open in browser. Return ONLY the README markdown text.`,
   messages: [{ role: 'user', content: `Write the README for this app: ${prompt}` }]
 })

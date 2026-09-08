@@ -2,60 +2,59 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../config/db.js'
 import { createRazorpayOrder, verifyRazorpaySignature, verifyWebhookSignature } from '../config/razorpay.js'
 
-const DOWNLOAD_PRICE = 49900 // ₹499 in paise
+const DOWNLOAD_PRICE = 9900 // ₹99 in paise
 
+const isDuplicatePayment = async (razorpayOrderId) => {
+  const existing = await queryOne(
+    `SELECT id FROM payments WHERE razorpay_order_id=? AND status='paid'`,
+    [razorpayOrderId]
+  )
+  return !!existing
+}
+
+// ─────────────────────────────────────────────────────────────
 // POST /api/payments/order
-// Creates Cashfree payment for ₹499 download
+// Creates a Razorpay order to unlock download + hosting for one project (₹99)
+// ─────────────────────────────────────────────────────────────
+// createOrder — projectId becomes optional/for-reference only; check global has_paid
 export const createOrder = async (req, res) => {
   try {
-    const { projectId } = req.body
-    if (!projectId) return res.status(400).json({ error: 'projectId is required.' })
+    const { projectId } = req.body // optional now, just for payment history
 
-    const project = await queryOne(
-      'SELECT * FROM projects WHERE id=? AND user_id=?',
-      [projectId, req.user.id]
+    const currentUser = await queryOne('SELECT has_paid FROM users WHERE id=?', [req.user.id])
+    if (currentUser?.has_paid) {
+      return res.status(400).json({ error: 'Download & hosting are already unlocked for your account.' })
+    }
+
+    const merchantTransactionId = `zater_unlock_${req.user.id}_${Date.now()}`.slice(0, 40)
+
+    const orderData = await createRazorpayOrder({
+      orderId: merchantTransactionId,
+      amountPaise: DOWNLOAD_PRICE,
+      notes: { userId: String(req.user.id), projectId: projectId || null },
+    })
+
+    await query(
+      `INSERT INTO payments (id, user_id, project_id, razorpay_order_id, amount, status, type)
+       VALUES (?,?,?,?,?,'created','unlock_payment')`,
+      [uuidv4(), req.user.id, projectId || null, orderData.id, DOWNLOAD_PRICE]
     )
-    if (!project)              return res.status(404).json({ error: 'Project not found.' })
-    if (project.status !== 'ready') return res.status(400).json({ error: 'Website is still generating.' })
-    if (project.download_paid) return res.status(400).json({ error: 'Download already unlocked.' })
 
-    const merchantTransactionId = `zater_dl_${projectId.slice(0, 8)}_${Date.now()}`.slice(0, 40)
-
-    // inside createOrder — replace the createCashfreeOrder call + response
-const orderData = await createRazorpayOrder({
-  orderId: merchantTransactionId,
-  amountPaise: DOWNLOAD_PRICE,
-  notes: { userId: String(req.user.id), projectId },
-})
-
-await query(
-  `INSERT INTO payments (id, user_id, project_id, razorpay_order_id, amount, status)
-   VALUES (?,?,?,?,?,'created')`,
-  [uuidv4(), req.user.id, projectId, orderData.id, DOWNLOAD_PRICE]
-)
-
-console.log(`💳 Razorpay order: ${orderData.id} for project ${projectId}`)
-res.json({
-  razorpayOrderId: orderData.id,
-  razorpayKeyId: process.env.RAZORPAY_KEY_ID,   // frontend needs this to open Checkout
-  amount: DOWNLOAD_PRICE,
-  currency: 'INR',
-})
+    res.json({
+      razorpayOrderId: orderData.id,
+      razorpayKeyId: process.env.RAZORPAY_KEY_ID,
+      amount: DOWNLOAD_PRICE,
+      currency: 'INR',
+    })
   } catch (err) {
     console.error('createOrder:', err)
     res.status(500).json({ error: 'Payment setup failed. Please try again.' })
   }
 }
 
-// POST /api/payments/verify
-// Called by your frontend after Cashfree redirects back
-// verifyPayment is now signature-based, not a status poll — replace the whole function body
-// checkPaymentStatus becomes verifyAndFinalize — signature check replaces checkCashfreeStatus poll
-// POST /api/payments/verify
-// Called by frontend after Razorpay Checkout succeeds — signature-based, not a status poll
 // ─────────────────────────────────────────────────────────────
-// POST /api/credits/verify
-// Called by frontend after Razorpay Checkout succeeds
+// POST /api/payments/verify
+// Called by frontend after Razorpay Checkout succeeds — signature-based
 // ─────────────────────────────────────────────────────────────
 export const verifyPayment = async (req, res) => {
   const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body
@@ -65,7 +64,7 @@ export const verifyPayment = async (req, res) => {
     }
 
     const payment = await queryOne(
-      'SELECT * FROM payments WHERE phonepe_txn_id=? AND user_id=?',
+      'SELECT * FROM payments WHERE razorpay_order_id=? AND user_id=?',
       [razorpay_order_id, req.user.id]
     )
     if (!payment) return res.status(404).json({ error: 'Payment record not found.' })
@@ -77,32 +76,26 @@ export const verifyPayment = async (req, res) => {
     })
 
     if (!valid) {
-      await query('UPDATE payments SET status=? WHERE phonepe_txn_id=?', ['failed', razorpay_order_id])
+      await query('UPDATE payments SET status=? WHERE razorpay_order_id=?', ['failed', razorpay_order_id])
       return res.json({ status: 'failed', message: 'Signature verification failed.' })
     }
 
     // ── Finalize based on payment type ──
-    if (payment.type === 'unlock_payment') {
-      await query('UPDATE users SET has_paid = 1 WHERE id=?', [req.user.id])
-      const currentUser = await queryOne('SELECT credits FROM users WHERE id=?', [req.user.id])
+ // verifyPayment — unlock_payment branch now sets the GLOBAL flag, not per-project
+if (payment.type === 'unlock_payment') {
+  await query('UPDATE users SET has_paid = 1 WHERE id=?', [req.user.id])
 
-      try {
-        await query(
-          `INSERT INTO credit_transactions (user_id, type, amount, reason, ref_id, balance_after)
-           VALUES (?, 'unlock', 0, 'unlock_payment', ?, ?)`,
-          [req.user.id, razorpay_order_id, currentUser.credits]
-        )
-      } catch {}
+  await query(
+    'UPDATE payments SET razorpay_payment_id=?, status=? WHERE razorpay_order_id=?',
+    [razorpay_payment_id, 'paid', razorpay_order_id]
+  )
 
-      await query('UPDATE payments SET razorpay_payment_id=?, status=? WHERE phonepe_txn_id=?', [razorpay_payment_id, 'paid', razorpay_order_id])
-
-      return res.json({
-        status: 'paid',
-        message: 'Download and hosting unlocked successfully!',
-        has_paid: true,
-        credits: currentUser.credits,
-      })
-    }
+  return res.json({
+    status: 'paid',
+    message: 'Download and hosting unlocked forever on your account!',
+    has_paid: true,
+  })
+}
 
     if (payment.type === 'credit_purchase') {
       const planKey = Object.keys(PACKS).find(k => PACKS[k].pricePaise === payment.amount) || DEFAULT_PACK
@@ -119,7 +112,10 @@ export const verifyPayment = async (req, res) => {
         )
       } catch {}
 
-      await query('UPDATE payments SET razorpay_payment_id=?, status=? WHERE phonepe_txn_id=?', [razorpay_payment_id, 'paid', razorpay_order_id])
+      await query(
+        'UPDATE payments SET razorpay_payment_id=?, status=? WHERE razorpay_order_id=?',
+        [razorpay_payment_id, 'paid', razorpay_order_id]
+      )
 
       return res.json({
         status: 'paid',
@@ -138,7 +134,7 @@ export const verifyPayment = async (req, res) => {
 }
 
 // ─────────────────────────────────────────────────────────────
-// POST /api/credits/webhook — Razorpay server-to-server callback
+// POST /api/payments/webhook — Razorpay server-to-server callback
 // ─────────────────────────────────────────────────────────────
 export const razorpayWebhook = async (req, res) => {
   try {
@@ -154,7 +150,9 @@ export const razorpayWebhook = async (req, res) => {
   }
 }
 
+// ─────────────────────────────────────────────────────────────
 // GET /api/payments/history
+// ─────────────────────────────────────────────────────────────
 export const getHistory = async (req, res) => {
   try {
     const payments = await query(

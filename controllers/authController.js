@@ -20,6 +20,7 @@ const signToken = (user) =>
     { expiresIn: '7d' }
   )
 
+// 2. In safeUser(), add has_paid to the returned object:
 const safeUser = (user) => ({
   id:         user.id,
   name:       user.name,
@@ -28,6 +29,7 @@ const safeUser = (user) => ({
   plan:       user.plan,
   role:       user.role || 'user',
   credits:    user.credits ?? SIGNUP_CREDITS,
+  has_paid:   !!user.has_paid,
   created_at: user.created_at,
 })
 
@@ -99,7 +101,7 @@ export const sendEmailOTP = async (req, res) => {
 // ── POST /api/auth/verify-otp ─────────────────────────────────
 export const verifyEmailOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body
+    const { email, otp, name, phone } = req.body   // ← add name, phone
     if (!email?.trim() || !otp?.trim())
       return res.status(400).json({ error: 'Email and OTP are required.' })
 
@@ -115,13 +117,13 @@ export const verifyEmailOTP = async (req, res) => {
     let user = await queryOne('SELECT * FROM users WHERE email=?', [email.toLowerCase()])
 
     if (!user) {
-      // New user — auto-create, same as Google flow
-      const avatar = AVATARS[Math.floor(Math.random() * AVATARS.length)]
-      const role   = isAdminEmail(email) ? 'admin' : 'user'
-      const name   = email.split('@')[0]
+      const avatar   = AVATARS[Math.floor(Math.random() * AVATARS.length)]
+      const role     = isAdminEmail(email) ? 'admin' : 'user'
+      const userName = name?.trim() || email.split('@')[0]   // ← use submitted name if present
+
       const result = await query(
-        'INSERT INTO users (name, email, password, avatar, credits, role) VALUES (?,?,?,?,?,?)',
-        [name, email.toLowerCase(), '', avatar, SIGNUP_CREDITS, role]
+        'INSERT INTO users (name, email, password, avatar, phone, credits, role) VALUES (?,?,?,?,?,?,?)',
+        [userName, email.toLowerCase(), '', avatar, phone || null, SIGNUP_CREDITS, role]  // ← added phone
       )
       user = await queryOne('SELECT * FROM users WHERE id=?', [result.insertId])
       query('INSERT INTO credit_transactions (user_id, type, amount, reason, balance_after) VALUES (?,?,?,?,?)',
@@ -249,10 +251,11 @@ export const login = async (req, res) => {
 // ── GET /api/auth/me ─────────────────────────────────────────
 export const getMe = async (req, res) => {
   try {
-    const user = await queryOne(
-      'SELECT id, name, email, avatar, plan, role, credits, created_at FROM users WHERE id=?',
-      [req.user.id]
-    )
+    // 1. In getMe, add has_paid to the SELECT:
+const user = await queryOne(
+  'SELECT id, name, email, avatar, plan, role, credits, has_paid, created_at FROM users WHERE id=?',
+  [req.user.id]
+)
     if (!user) return res.status(404).json({ error: 'User not found.' })
     res.json({ user: safeUser(user) })
   } catch (err) {

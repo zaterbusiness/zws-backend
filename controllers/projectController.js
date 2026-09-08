@@ -24,13 +24,23 @@ STRICT RULES:
 
 // REPLACE the entire generateWithAI function with this:
 const generateWithAI = async (prompt) => {
-  const message = await anthropic.messages.create({
+  let html = ''
+  const stream = anthropic.messages.stream({
     model: 'claude-opus-4-8',
     max_tokens: 52000,
     system: AI_PROMPT,
     messages: [{ role: 'user', content: `Create a complete professional website for: ${prompt}` }],
   })
-  return message.content[0].text
+  for await (const chunk of stream) {
+    if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
+      html += chunk.delta.text
+    }
+  }
+  const result = await stream.finalMessage()
+  if (result.stop_reason === 'max_tokens') {
+    console.warn('Website generation hit max_tokens — output may be truncated')
+  }
+  return html
 }
 
 // ── POST /api/projects ────────────────────────────────────────
@@ -175,14 +185,20 @@ export const getProjectStatus = async (req, res) => {
   }
 }
 
-// ── GET /api/projects/:id/download ───────────────────────────
 export const downloadProject = async (req, res) => {
   try {
+    const user = await queryOne('SELECT has_paid FROM users WHERE id=?', [req.user.id])
+    if (!user?.has_paid) {
+      return res.status(403).json({ error: 'Please pay ₹99 once to unlock downloads & hosting for all your websites.' })
+    }
+
     const p = await queryOne(
-      `SELECT * FROM projects WHERE id=? AND user_id=? AND download_paid=1 AND status='ready'`,
+      `SELECT * FROM projects WHERE id=? AND user_id=? AND status='ready'`,
       [req.params.id, req.user.id]
     )
-    if (!p) return res.status(403).json({ error: 'Please pay ₹499 to download this website.' })
+    if (!p) return res.status(404).json({ error: 'Project not found or not ready.' })
+
+    // ...rest unchanged (filename, headers, res.send)
 
     const filename =
       p.title

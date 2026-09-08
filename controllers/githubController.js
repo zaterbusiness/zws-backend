@@ -269,23 +269,37 @@ export async function deployToGithubPages(req, res) {
 
   try {
     // 1. Get admin credentials (no user token needed)
-    let octokit, username
-    try {
-      ({ octokit, username } = await getUserOctokit())
-      console.log(`[GitHub] Deploying via admin GitHub: @${username}`)
-    } catch (err) {
-      return res.status(400).json({ error: err.message })
-    }
+// 1. Get admin credentials (no user token needed)
+let octokit, username
+try {
+  ({ octokit, username } = await getUserOctokit())
+} catch (err) {
+  return res.status(400).json({ error: err.message })
+}
+
+// ── PAYWALL: global unlock required for hosting ──
+const [userRows] = await db.query('SELECT has_paid FROM users WHERE id = ?', [userId])
+if (!userRows[0]?.has_paid) {
+  return res.status(403).json({ error: 'Please pay ₹99 once to unlock download & hosting for all your websites.' })
+}
 
     // 2. Resolve HTML
-    if (projectId) {
-      const [rows] = await db.query(
-        'SELECT id, title, generated_html, subdomain, template_name FROM projects WHERE id = ? AND user_id = ?',
-        [projectId, userId]
-      )
-      if (!rows.length) return res.status(404).json({ error: 'Project not found.' })
-      const p = rows[0]
-      console.log(`[GitHub] DB html length: ${p.generated_html?.length ?? 'NULL'}`)
+   // 2. Resolve HTML
+if (projectId) {
+  const [rows] = await db.query(
+    'SELECT id, title, generated_html, subdomain, template_name, download_paid FROM projects WHERE id = ? AND user_id = ?',
+    [projectId, userId]
+  )
+  if (!rows.length) return res.status(404).json({ error: 'Project not found.' })
+  const p = rows[0]
+
+  // ── PAYWALL: hosting requires the ₹99 unlock, same as download ──
+  if (!p.download_paid) {
+    return res.status(403).json({ error: 'Please pay ₹99 to unlock download & hosting for this website.' })
+  }
+
+  console.log(`[GitHub] DB html length: ${p.generated_html?.length ?? 'NULL'}`)
+ 
 
       if (p.generated_html && p.generated_html.trim().length > 10) {
         html = p.generated_html

@@ -54,6 +54,27 @@ export const pushAppToGithubAdmin = async (req, res) => {
     res.status(500).json({ error: 'GitHub push failed: ' + err.message })
   }
 }
+
+// ── GET /api/admin/payments ─── (update the SELECT to include type + user_id)
+// ── GET /api/admin/payments ─── (update the SELECT to include type + user_id)
+// ── DELETE /api/admin/payments/:id — revoke an unlock payment ──
+export const deletePayment = async (req, res) => {
+  try {
+    const payment = await queryOne('SELECT * FROM payments WHERE id=?', [req.params.id])
+    if (!payment) return res.status(404).json({ error: 'Payment not found.' })
+
+    await query('DELETE FROM payments WHERE id=?', [req.params.id])
+
+    if (payment.type === 'unlock_payment' && payment.status === 'paid') {
+      await query('UPDATE users SET has_paid=0 WHERE id=?', [payment.user_id])
+    }
+
+    res.json({ message: 'Payment deleted. User is locked out until they pay again.' })
+  } catch (err) {
+    console.error('deletePayment:', err)
+    res.status(500).json({ error: 'Failed to delete payment.' })
+  }
+}
 // ── POST /api/admin/login ─────────────────────────────────────
 export const adminLogin = async (req, res) => {
   try {
@@ -473,6 +494,7 @@ export const getProjects = async (req, res) => {
 }
 
 // ── GET /api/admin/payments ───────────────────────────────────
+// ── GET /api/admin/payments ───────────────────────────────────
 export const getPayments = async (req, res) => {
   try {
     const page   = Number(req.query.page  || 1)
@@ -481,11 +503,11 @@ export const getPayments = async (req, res) => {
 
     const pCols   = await query('SHOW COLUMNS FROM payments')
     const pNames  = pCols.map(c => c.Field)
-    const rzpSql      = pNames.includes('razorpay_payment_id') ? "COALESCE(p.razorpay_payment_id,'')" : "''"
+    const rzpSql       = pNames.includes('razorpay_payment_id') ? "COALESCE(p.razorpay_payment_id,'')" : "''"
     const projectIdSql = pNames.includes('project_id')
 
     const payments = await query(`
-      SELECT p.id, p.amount, p.status, p.created_at,
+      SELECT p.id, p.user_id, p.amount, p.status, p.type, p.created_at,
              ${rzpSql} AS razorpay_payment_id,
              u.name AS user_name, u.email AS user_email
              ${projectIdSql ? ", COALESCE(pr.title,'') AS project_title" : ", '' AS project_title"}
@@ -504,7 +526,6 @@ export const getPayments = async (req, res) => {
     res.status(500).json({ error: err.message })
   }
 }
-
 // ── GET /api/admin/stats/realtime ────────────────────────────
 export const getRealtimeStats = async (req, res) => {
   try {
