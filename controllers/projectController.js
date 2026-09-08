@@ -118,12 +118,12 @@ const trackedHtml = injectTrackingScript(html, projectId)
 // ── GET /api/projects ─────────────────────────────────────────
 export const getUserProjects = async (req, res) => {
   try {
-    const websites = await query(
-      `SELECT id, title, prompt, status, download_paid, created_at,
-              github_url, github_repo, 'website' AS type
-       FROM projects WHERE user_id=? ORDER BY created_at DESC`,
-      [req.user.id]
-    )
+ const websites = await query(
+  `SELECT id, title, prompt, status, download_paid, created_at,
+          github_url, github_repo, 'website' AS type
+   FROM projects WHERE user_id=? AND deleted_at IS NULL ORDER BY created_at DESC`,
+  [req.user.id]
+)
 
     const apps = await query(
       `SELECT id, title, prompt, status, download_paid, created_at,
@@ -217,6 +217,8 @@ export const downloadProject = async (req, res) => {
 }
 
 // ── DELETE /api/projects/:id ──────────────────────────────────
+// ── DELETE /api/projects/:id ──────────────────────────────────
+// ── DELETE /api/projects/:id ──────────────────────────────────
 export const deleteProject = async (req, res) => {
   try {
     const p = await queryOne(
@@ -224,9 +226,14 @@ export const deleteProject = async (req, res) => {
       [req.params.id, req.user.id]
     )
     if (!p) return res.status(404).json({ error: 'Not found.' })
-    await query('DELETE FROM projects WHERE id=?', [p.id])
+
+    // Soft delete — keep the row, just mark it deleted
+    await query('UPDATE projects SET deleted_at=NOW() WHERE id=?', [p.id])
+
+    console.log(`🗑️ Project ${p.id} soft-deleted by user ${req.user.id}`)
     res.json({ message: 'Project deleted.' })
   } catch (err) {
+    console.error('deleteProject:', err.sqlMessage || err.message)
     res.status(500).json({ error: 'Delete failed.' })
   }
 }

@@ -453,30 +453,32 @@ export const getProjects = async (req, res) => {
     const aWhere = aConditions.length ? `WHERE ${aConditions.join(' AND ')}` : ''
 
     const combined = await query(`
-      (
-        SELECT p.id, p.title, p.prompt, p.status,
-               COALESCE(p.download_paid,0) AS download_paid,
-               ${hPaidSql} AS hosting_paid,
-               ${hSubSql}  AS hosted_subdomain,
-               p.created_at, 'website' AS type,
-               u.name AS user_name, u.email AS user_email, COALESCE(u.avatar,'') AS user_avatar
-        FROM projects p JOIN users u ON u.id=p.user_id
-        ${wWhere}
-      )
-      UNION ALL
-      (
-        SELECT a.id, a.title, a.prompt, a.status,
-               COALESCE(a.download_paid,0) AS download_paid,
-               0 AS hosting_paid,
-               '' AS hosted_subdomain,
-               a.created_at, 'app' AS type,
-               u.name AS user_name, u.email AS user_email, COALESCE(u.avatar,'') AS user_avatar
-        FROM apps a JOIN users u ON u.id=a.user_id
-        ${aWhere}
-      )
-      ORDER BY created_at DESC
-      LIMIT ${Number(limit)} OFFSET ${offset}
-    `, [...wParams, ...aParams])
+  (
+    SELECT p.id, p.title, p.prompt, p.status,
+           COALESCE(p.download_paid,0) AS download_paid,
+           ${hPaidSql} AS hosting_paid,
+           ${hSubSql}  AS hosted_subdomain,
+           p.created_at, 'website' AS type,
+           p.deleted_at,
+           u.name AS user_name, u.email AS user_email, COALESCE(u.avatar,'') AS user_avatar
+    FROM projects p JOIN users u ON u.id=p.user_id
+    ${wWhere}
+  )
+  UNION ALL
+  (
+    SELECT a.id, a.title, a.prompt, a.status,
+           COALESCE(a.download_paid,0) AS download_paid,
+           0 AS hosting_paid,
+           '' AS hosted_subdomain,
+           a.created_at, 'app' AS type,
+           NULL AS deleted_at,
+           u.name AS user_name, u.email AS user_email, COALESCE(u.avatar,'') AS user_avatar
+    FROM apps a JOIN users u ON u.id=a.user_id
+    ${aWhere}
+  )
+  ORDER BY created_at DESC
+  LIMIT ${Number(limit)} OFFSET ${offset}
+`, [...wParams, ...aParams])
 
     const [{ total }] = await query(`
       SELECT (
