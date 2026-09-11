@@ -1,13 +1,23 @@
 import bcrypt     from 'bcryptjs'
 import jwt        from 'jsonwebtoken'
 import crypto     from 'crypto'
-import nodemailer from 'nodemailer'
+import axios from 'axios'
 import { query, queryOne } from '../config/db.js'
 import { OAuth2Client } from 'google-auth-library'
 
 const AVATARS = ['🧑‍💻','👩‍💻','🦄','🚀','⚡','🎯','🔥','💎','🌟','🎨','🦋','🏆']
 const SIGNUP_CREDITS = 100  // every new user gets 100 free credits
-
+const sendBrevoEmail = ({ to, subject, html }) =>
+  axios.post(
+    'https://api.brevo.com/v3/smtp/email',
+    {
+      sender:      { name: 'Zater Web Studio', email: process.env.BREVO_SENDER_EMAIL },
+      to:          [{ email: to }],
+      subject,
+      htmlContent: html,
+    },
+    { headers: { 'api-key': process.env.BREVO_API_KEY, 'Content-Type': 'application/json' } }
+  )
 // ── Admin email check ─────────────────────────────────────────
 const isAdminEmail = (email) =>
   email.toLowerCase().trim() === (process.env.ADMIN_EMAIL || '').toLowerCase().trim()
@@ -72,9 +82,7 @@ export const sendEmailOTP = async (req, res) => {
       [email.toLowerCase(), otp, expiresAt]
     )
 
-    const transporter = createTransporter()
-    await transporter.sendMail({
-      from:    `"Zater Web Studio" <${process.env.SMTP_USER}>`,
+          await sendBrevoEmail({
       to:      email,
       subject: `${otp} is your Zater login code`,
       html: `<body style="font-family:system-ui;background:#f4f4f8;margin:0;padding:20px;">
@@ -294,10 +302,8 @@ export const forgotPassword = async (req, res) => {
       [user.id, token, expiresAt]
     )
 
-    const resetUrl    = `${process.env.FRONTEND_URL}/reset-password?token=${token}`
-    const transporter = createTransporter()
-    await transporter.sendMail({
-      from:    `"Zater Web Studio" <${process.env.SMTP_USER}>`,
+      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${token}`
+        await sendBrevoEmail({
       to:      user.email,
       subject: 'Reset your Zater password',
       html: `<body style="font-family:system-ui;background:#f4f4f8;margin:0;padding:20px;">
