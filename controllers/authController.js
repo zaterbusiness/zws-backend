@@ -53,8 +53,8 @@ const createTransporter = () =>
     secure: false,
     auth:   { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
     tls:    { rejectUnauthorized: false },
+    family: 4,   // ← add this line
   })
-
 
   // ── POST /api/auth/send-otp ───────────────────────────────────
 export const sendEmailOTP = async (req, res) => {
