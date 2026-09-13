@@ -41,8 +41,19 @@ const HOSTED_DIR = process.env.HOSTED_DIR || path.join(__dirname, 'hosted_sites'
 // Public, no-credentials CORS just for the tracking beacon — must come before global cors()
 app.use('/api/analytics/track', cors({ origin: true, credentials: false }))
 
+const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:5173')
+  .split(',')
+  .map(o => o.trim())
+
 app.use(cors({
-  origin:         process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin: (origin, callback) => {
+    // allow requests with no origin (like mobile apps, curl, server-to-server)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true)
+    } else {
+      callback(new Error(`CORS blocked for origin: ${origin}`))
+    }
+  },
   credentials:    true,
   methods:        ['GET','POST','PUT','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization'],
