@@ -20,7 +20,7 @@ const PACKS = {
   pack200: { credits: 200, pricePaise: 179 * 100 },
 }
 const DEFAULT_PACK = 'pack100'
-const UNLOCK_PRICE_PAISE = 99 * 100
+const UNLOCK_PRICE_PAISE = 1 * 100
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173'
 const BACKEND_URL  = process.env.BACKEND_URL  || 'http://localhost:5000'
