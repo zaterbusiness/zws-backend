@@ -1,11 +1,4 @@
 import { query, queryOne } from '../config/db.js'
-import fs   from 'fs'
-import path from 'path'
-import { fileURLToPath } from 'url'
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const UPLOADS   = path.join(__dirname, '..', 'uploads', 'ads')
-try { fs.mkdirSync(UPLOADS, { recursive: true }) } catch {}
 
 // ── GET /api/ads/active — public, no auth ─────────────────────
 // Called by Home.jsx on mount. Returns the active ad and tracks the page view.
@@ -90,19 +83,18 @@ export const getAds = async (req, res) => {
 
 // ── POST /api/admin/ads — create ad ──────────────────────────
 // New ads default to is_active = 1 so they show on homepage immediately.
+// Image is stored directly as a base64 data URL in the `ads.image_url` column —
+// no filesystem writes, so it survives Render restarts/redeploys, and there's
+// no /uploads/ads/... URL for ad-blockers to pattern-match against.
 export const createAd = async (req, res) => {
   try {
     const { title, imageBase64, imageType, link_url, link_text, is_active } = req.body
     if (!title?.trim()) return res.status(400).json({ error: 'Title is required.' })
 
-    // Save uploaded image if provided
     let image_url = ''
     if (imageBase64 && imageType) {
-      const ext  = (imageType.split('/')[1] || 'jpg').replace('jpeg', 'jpg')
-      const name = `ad_${Date.now()}.${ext}`
-      const buf  = Buffer.from(imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64')
-      fs.writeFileSync(path.join(UPLOADS, name), buf)
-      image_url = `/uploads/ads/${name}`
+      const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+      image_url = `data:${imageType};base64,${cleanBase64}`
     }
 
     // is_active defaults to 1 (active) — admin can deactivate later
@@ -128,11 +120,8 @@ export const updateAd = async (req, res) => {
 
     let image_url = ad.image_url
     if (imageBase64 && imageType) {
-      const ext  = (imageType.split('/')[1] || 'jpg').replace('jpeg', 'jpg')
-      const name = `ad_${Date.now()}.${ext}`
-      const buf  = Buffer.from(imageBase64.replace(/^data:image\/\w+;base64,/, ''), 'base64')
-      fs.writeFileSync(path.join(UPLOADS, name), buf)
-      image_url = `/uploads/ads/${name}`
+      const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '')
+      image_url = `data:${imageType};base64,${cleanBase64}`
     }
 
     const activeFlag = is_active !== undefined ? (is_active ? 1 : 0) : ad.is_active
@@ -158,10 +147,6 @@ export const updateAd = async (req, res) => {
 // ── DELETE /api/admin/ads/:id ─────────────────────────────────
 export const deleteAd = async (req, res) => {
   try {
-    const ad = await queryOne('SELECT image_url FROM ads WHERE id = ?', [req.params.id])
-    if (ad?.image_url) {
-      try { fs.unlinkSync(path.join(__dirname, '..', ad.image_url)) } catch {}
-    }
     await query('DELETE FROM ads WHERE id = ?', [req.params.id])
     res.json({ message: 'Ad deleted.' })
   } catch (err) {
