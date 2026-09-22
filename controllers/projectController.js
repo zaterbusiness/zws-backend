@@ -46,13 +46,23 @@ const generateQuestions = async (prompt) => {
   const result = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 500,
-    system: `You help clarify website requirements. Based on the user's topic, return ONLY a JSON array (no markdown, no explanation) of 3-5 short clarifying questions that would help generate a better website. Each item: {"id": "q1", "question": "..."}`,
+    system: `You help clarify website requirements. Based on the user's topic, return ONLY a raw JSON array (no markdown, no explanation) of 3-5 short clarifying questions that would help generate a better website.
+
+Each item must have EXACTLY this shape:
+{"id": "q1", "question": "...", "options": ["...", "...", "..."]}
+
+Rules:
+- Each question needs 2-4 short, mutually exclusive answer options.
+- Only ask questions whose answer would meaningfully change the website's content, sections, or structure (e.g. "what's the primary goal — sell a product, book appointments, showcase a portfolio?").
+- Never ask about styling, colors, or fonts — those have safe defaults.
+- Be decisive: skip questions entirely (return an empty array) if the topic is already specific enough.`,
     messages: [{ role: 'user', content: `Topic: ${prompt}` }],
   })
   const text = result.content.find(b => b.type === 'text')?.text || '[]'
   const clean = text.replace(/^```json\n?|```$/g, '').trim()
   try {
-    return JSON.parse(clean)
+    const parsed = JSON.parse(clean)
+    return Array.isArray(parsed) ? parsed.slice(0, 5) : []
   } catch {
     return []
   }
@@ -166,12 +176,13 @@ const generateWebsite = async (projectId, prompt, userId, creditAmount) => {
     if (!html || html.length < 100) throw new Error('HTML too short or empty')
 const trackedHtml = injectTrackingScript(html, projectId)
 
-    await query(
-      `UPDATE projects SET generated_html=?, status='ready', current_step=NULL, updated_at=NOW() WHERE id=?`,
-      [trackedHtml, projectId]   // was: [html, projectId]
-    )
-    await query(`UPDATE projects SET current_step=? WHERE id=?`,
-      ['Finalizing your website...', projectId])
+await query(`UPDATE projects SET current_step=? WHERE id=?`,
+  ['Finalizing your website...', projectId])
+
+await query(
+  `UPDATE projects SET generated_html=?, status='ready', current_step=NULL, updated_at=NOW() WHERE id=?`,
+  [trackedHtml, projectId]
+)
 
     await query(
       `UPDATE projects SET generated_html=?, status='ready', current_step=NULL, updated_at=NOW() WHERE id=?`,
