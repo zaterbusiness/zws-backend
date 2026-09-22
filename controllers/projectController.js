@@ -20,8 +20,8 @@ STRICT RULES:
 - Smooth scroll, hover effects, entrance animations.
 - Realistic professional placeholder content.
 - Sticky navigation, hero, features, about, contact sections.
+- DO NOT use <a> anchor tags anywhere — for the nav bar, buttons, links, or CTAs. Use <button> elements for ALL clickable items (nav links, CTAs, footer links included), with onclick or JS event listeners handling scroll/navigation via document.getElementById(...).scrollIntoView().
 - DO NOT use external image URLs — use CSS gradients and SVG only.`
-
 // REPLACE the entire generateWithAI function with this:
 const generateWithAI = async (prompt) => {
   let html = ''
@@ -42,7 +42,21 @@ const generateWithAI = async (prompt) => {
   }
   return html
 }
-
+const generateQuestions = async (prompt) => {
+  const result = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 500,
+    system: `You help clarify website requirements. Based on the user's topic, return ONLY a JSON array (no markdown, no explanation) of 3-5 short clarifying questions that would help generate a better website. Each item: {"id": "q1", "question": "..."}`,
+    messages: [{ role: 'user', content: `Topic: ${prompt}` }],
+  })
+  const text = result.content.find(b => b.type === 'text')?.text || '[]'
+  const clean = text.replace(/^```json\n?|```$/g, '').trim()
+  try {
+    return JSON.parse(clean)
+  } catch {
+    return []
+  }
+}
 // ── POST /api/projects ────────────────────────────────────────
 export const createProject = async (req, res) => {
   let id
@@ -56,23 +70,81 @@ export const createProject = async (req, res) => {
 
     await query(
       `INSERT INTO projects (id, user_id, title, prompt, status, download_paid, current_step)
-       VALUES (?, ?, ?, ?, 'generating', 0, 'Analyzing your prompt...')`,
+       VALUES (?, ?, ?, ?, 'analyzing', 0, 'Analyzing your prompt...')`,
       [id, req.user.id, ptitle, prompt.trim()]
     )
 
     console.log(`🚀 Project ${id} by user ${req.user.id}`)
-    res.status(201).json({ projectId: id, status: 'generating', message: 'Generation started!' })
+    res.status(201).json({ projectId: id, status: 'analyzing', message: 'Preparing questions...' })
   } catch (err) {
     console.error('createProject:', err)
     return res.status(500).json({ error: 'Failed to create project.' })
   }
 
-  // Fired only after response is sent — errors here can never double-send
-  generateWebsite(id, req.body.prompt.trim(), req.user.id, WEBSITE_GEN_CREDITS).catch(err =>
-    console.error(`Generation failed ${id}:`, err.message)
-  )
+  // Generate questions in background, then wait for answers
+  generateQuestions(req.body.prompt.trim())
+    .then(async (questions) => {
+      if (!questions.length) {
+        // fallback: no questions generated, go straight to generation
+        await query(`UPDATE projects SET status='generating', current_step=? WHERE id=?`,
+          ['Designing layout & writing content...', id])
+        return generateWebsite(id, req.body.prompt.trim(), req.user.id, WEBSITE_GEN_CREDITS)
+      }
+      await query(`UPDATE projects SET status='awaiting_answers', questions=?, current_step=NULL WHERE id=?`,
+        [JSON.stringify(questions), id])
+    })
+    .catch(err => console.error(`Question gen failed ${id}:`, err.message))
 }
 
+// ── GET /api/projects/:id/questions ────────────────────────────
+export const getProjectQuestions = async (req, res) => {
+  try {
+    const p = await queryOne(
+      'SELECT id, status, questions FROM projects WHERE id=? AND user_id=?',
+      [req.params.id, req.user.id]
+    )
+    if (!p) return res.status(404).json({ error: 'Not found.' })
+    res.json({
+      status: p.status,
+      questions: p.questions ? JSON.parse(p.questions) : [],
+    })
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch questions.' })
+  }
+}
+// ── GET /api/projects/:id/questions ────────────────────────────
+
+// ── POST /api/projects/:id/answers ─────────────────────────────
+export const submitProjectAnswers = async (req, res) => {
+  try {
+    const { answers } = req.body // { q1: "...", q2: "..." }
+    const p = await queryOne(
+      'SELECT * FROM projects WHERE id=? AND user_id=?',
+      [req.params.id, req.user.id]
+    )
+    if (!p) return res.status(404).json({ error: 'Project not found.' })
+
+    const questions = p.questions ? JSON.parse(p.questions) : []
+    const answerText = questions
+      .map(q => `${q.question} Answer: ${answers?.[q.id] || 'N/A'}`)
+      .join('\n')
+
+    const enhancedPrompt = `${p.prompt}\n\nAdditional details:\n${answerText}`
+
+    await query(
+      `UPDATE projects SET answers=?, status='generating', current_step=? WHERE id=?`,
+      [JSON.stringify(answers), 'Designing layout & writing content...', req.params.id]
+    )
+
+    res.json({ message: 'Generation started!', projectId: req.params.id })
+
+    generateWebsite(req.params.id, enhancedPrompt, req.user.id, WEBSITE_GEN_CREDITS).catch(err =>
+      console.error(`Generation failed ${req.params.id}:`, err.message)
+    )
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to submit answers.' })
+  }
+}
 // ── Background generation ─────────────────────────────────────
 const generateWebsite = async (projectId, prompt, userId, creditAmount) => {
   try {
