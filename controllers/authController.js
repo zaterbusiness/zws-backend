@@ -4,20 +4,14 @@ import crypto     from 'crypto'
 import axios from 'axios'
 import { query, queryOne } from '../config/db.js'
 import { OAuth2Client } from 'google-auth-library'
+// REMOVE this whole block:
+// const sendBrevoEmail = ({ to, subject, html }) => axios.post(...)
 
+// ADD:
+import { sendBrevoEmail, sendWelcomeEmail } from '../utils/mailer.js'
 const AVATARS = ['🧑‍💻','👩‍💻','🦄','🚀','⚡','🎯','🔥','💎','🌟','🎨','🦋','🏆']
 const SIGNUP_CREDITS = 100  // every new user gets 100 free credits
-const sendBrevoEmail = ({ to, subject, html }) =>
-  axios.post(
-    'https://api.brevo.com/v3/smtp/email',
-    {
-      sender:      { name: 'Zater Web Studio', email: process.env.BREVO_SENDER_EMAIL },
-      to:          [{ email: to }],
-      subject,
-      htmlContent: html,
-    },
-    { headers: { 'api-key': process.env.BREVO_API_KEY, 'Content-Type': 'application/json' } }
-  )
+
 // ── Admin email check ─────────────────────────────────────────
 const isAdminEmail = (email) =>
   email.toLowerCase().trim() === (process.env.ADMIN_EMAIL || '').toLowerCase().trim()
@@ -128,12 +122,12 @@ export const verifyEmailOTP = async (req, res) => {
       const avatar   = AVATARS[Math.floor(Math.random() * AVATARS.length)]
       const role     = isAdminEmail(email) ? 'admin' : 'user'
       const userName = name?.trim() || email.split('@')[0]   // ← use submitted name if present
-
       const result = await query(
         'INSERT INTO users (name, email, password, avatar, phone, credits, role) VALUES (?,?,?,?,?,?,?)',
         [userName, email.toLowerCase(), '', avatar, phone || null, SIGNUP_CREDITS, role]  // ← added phone
       )
       user = await queryOne('SELECT * FROM users WHERE id=?', [result.insertId])
+      sendWelcomeEmail({ to: user.email, name: user.name })
       query('INSERT INTO credit_transactions (user_id, type, amount, reason, balance_after) VALUES (?,?,?,?,?)',
         [user.id, 'earn', SIGNUP_CREDITS, 'signup_bonus', SIGNUP_CREDITS]).catch(() => {})
       console.log(`✅ New OTP user: ${email} (+${SIGNUP_CREDITS} credits) [role: ${role}]`)
@@ -407,6 +401,7 @@ export const googleAuth = async (req, res) => {
         [name, email.toLowerCase(), '', avatar, googleId, SIGNUP_CREDITS, role]
       )
       user = await queryOne('SELECT * FROM users WHERE email=?', [email.toLowerCase()])
+      sendWelcomeEmail({ to: user.email, name: user.name })
       query('INSERT INTO credit_transactions (user_id, type, amount, reason, balance_after) VALUES (?,?,?,?,?)',
         [user.id, 'earn', SIGNUP_CREDITS, 'signup_bonus', SIGNUP_CREDITS]).catch(() => {})
       console.log(`✅ New Google user: ${email} (+${SIGNUP_CREDITS} credits) [role: ${role}]`)

@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid'
 import { query, queryOne } from '../config/db.js'
 import { deductAfterSuccess } from '../middleware/creditsCheck.js'
 import { injectTrackingScript } from './analyticsController.js'
+import { sendUnpaidProjectEmail, sendZeroCreditsEmail } from '../utils/mailer.js'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // middleware/creditsCheck.js
@@ -189,8 +190,29 @@ await query(
       [html, projectId]
     )
 
-    await deductAfterSuccess(userId, creditAmount)
+        await deductAfterSuccess(userId, creditAmount)
     console.log(`✅ Ready: ${projectId} (${html.length} chars)`)
+
+    // ── Post-generation emails ──
+    const [project, user] = await Promise.all([
+      queryOne('SELECT title FROM projects WHERE id=?', [projectId]),
+      queryOne('SELECT name, email, credits, has_paid FROM users WHERE id=?', [userId]),
+    ])
+
+    if (user) {
+      if (!user.has_paid && project) {
+        sendUnpaidProjectEmail({
+          to: user.email,
+          name: user.name,
+          projectName: project.title,
+          generatedAt: new Date(),
+        })
+      }
+      if (user.credits <= 0) {
+        sendZeroCreditsEmail({ to: user.email, name: user.name })
+      }
+    }
+  
   } catch (err) {
     await query(`UPDATE projects SET status='failed', current_step=NULL, updated_at=NOW() WHERE id=?`, [projectId])
     console.error(`❌ Generation failed ${projectId}:`, err.message)
