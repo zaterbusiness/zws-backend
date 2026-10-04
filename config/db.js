@@ -21,6 +21,7 @@ const pool = mysql.createPool({
   ssl:                sslConfig,
   enableKeepAlive:       true,
   keepAliveInitialDelay: 10000,
+   timezone: 'Z',
 })
 
 export const testConnection = async () => {

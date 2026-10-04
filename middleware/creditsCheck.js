@@ -35,7 +35,7 @@ export const checkCreditsOnly = (amount = CREDITS_PER_GENERATION) => async (req,
 
 // ── deductAfterSuccess ────────────────────────────────────────
 // Call this INSIDE the controller after AI generation succeeds.
-export const deductAfterSuccess = async (userId, amount) => {
+export const deductAfterSuccess = async (userId, amount, reason = 'website_generation') => {
   await query(
     'UPDATE users SET credits = credits - ? WHERE id=? AND credits >= ?',
     [amount, userId, amount]
@@ -46,8 +46,8 @@ export const deductAfterSuccess = async (userId, amount) => {
 
   query(
     `INSERT INTO credit_transactions (user_id, type, amount, reason, balance_after)
-     VALUES (?, 'spend', ?, 'ai_generation', ?)`,
-    [userId, amount, newBalance]
+     VALUES (?, 'spend', ?, ?, ?)`,
+    [userId, amount, reason, newBalance]       // was hardcoded 'ai_generation'
   ).catch(() => {})
 
   console.log(`💳 Credits deducted post-generation: user ${userId} -${amount} → balance ${newBalance}`)
@@ -109,7 +109,7 @@ export const requirePayment = async (req, res, next) => {
 
     if (!user.has_paid) {
       return res.status(403).json({
-        error: 'Please complete the ₹99 unlock payment to enable downloads and hosting.',
+        error: 'Please complete the ₹49 unlock payment to enable downloads and hosting.',
         code: 'PAYMENT_REQUIRED',
       })
     }

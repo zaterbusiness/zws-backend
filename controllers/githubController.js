@@ -3,7 +3,7 @@
 import { Octokit } from '@octokit/rest'
 import db          from '../config/db.js'
 import { injectTrackingScript } from './analyticsController.js'   // ← add this import
-
+import { v4 as uuidv4 } from 'uuid'
 const REPO_NAME = 'zater-sites'
 const wait = ms => new Promise(r => setTimeout(r, ms))
 
@@ -260,15 +260,14 @@ export async function disconnectGithub(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 export async function deployToGithubPages(req, res) {
   const userId = req.user.id
-  let { projectId, html, title, templateName, subdomain } = req.body
+  let { projectId, html, title, templateName, subdomain, versionNo } = req.body
 
   console.log(`\n${'='.repeat(60)}`)
-  console.log(`[GitHub] DEPLOY START user=${userId} projectId=${projectId}`)
-  console.log(`[GitHub] body html=${html?.length ?? 'NOT SENT'} chars`)
+  console.log(`[GitHub] DEPLOY START user=${userId} projectId=${projectId} versionNo=${versionNo ?? 'current'}`)
   console.log(`${'='.repeat(60)}`)
 
   try {
-    // 1. Get admin credentials (no user token needed)
+    // 1. Admin credentials
     let octokit, username
     try {
       ({ octokit, username } = await getUserOctokit())
@@ -276,99 +275,155 @@ export async function deployToGithubPages(req, res) {
       return res.status(400).json({ error: err.message })
     }
 
-    // ── PAYWALL: global one-time unlock required for hosting ──
+    // Paywall: one-time unlock
     const [userRows] = await db.query('SELECT has_paid FROM users WHERE id = ?', [userId])
     if (!userRows[0]?.has_paid) {
       return res.status(403).json({ error: 'Please pay ₹49 once to unlock download & hosting for all your websites.' })
     }
 
-    // 2. Resolve HTML
+    // 2. Resolve HTML + which version is being deployed
+    let ver = null          // { version_no, html }
+    let isCurrent = true
+
     if (projectId) {
       const [rows] = await db.query(
-        'SELECT id, title, generated_html, subdomain, template_name FROM projects WHERE id = ? AND user_id = ?',
+        'SELECT id, title, generated_html, subdomain, template_name FROM projects WHERE id = ? AND user_id = ? AND deleted_at IS NULL',
         [projectId, userId]
       )
       if (!rows.length) return res.status(404).json({ error: 'Project not found.' })
       const p = rows[0]
 
-      // No per-project paywall — has_paid (checked above) unlocks all projects.
-
-      console.log(`[GitHub] DB html length: ${p.generated_html?.length ?? 'NULL'}`)
-
-      if (p.generated_html && p.generated_html.trim().length > 10) {
-        html = p.generated_html
-      } else if (html && html.trim().length > 10) {
-        console.log(`[GitHub] ⚠️ DB empty — using body html and patching DB`)
-        await db.query('UPDATE projects SET generated_html = ? WHERE id = ? AND user_id = ?', [html, projectId, userId])
-      } else {
-        return res.status(400).json({ error: 'No HTML found. Please try again.' })
+      let currentHtml = p.generated_html
+      if (!(currentHtml && currentHtml.trim().length > 10)) {
+        if (html && html.trim().length > 10) {
+          console.log(`[GitHub] ⚠️ DB empty — using body html and patching DB`)
+          await db.query('UPDATE projects SET generated_html = ? WHERE id = ? AND user_id = ?', [html, projectId, userId])
+          currentHtml = html
+        } else {
+          return res.status(400).json({ error: 'No HTML found. Please try again.' })
+        }
       }
+
+      if (versionNo) {
+        // ── Deploy a specific (usually older) version ──
+        const [vr] = await db.query(
+          'SELECT version_no, html FROM project_versions WHERE project_id = ? AND version_no = ?',
+          [projectId, versionNo]
+        )
+        if (!vr.length) return res.status(404).json({ error: 'Version not found.' })
+        ver = vr[0]
+        isCurrent = currentHtml === ver.html
+      } else {
+        // ── Deploy the current site: reuse a matching version or snapshot it ──
+        isCurrent = true
+        const [vr] = await db.query(
+          `SELECT version_no, html FROM project_versions
+           WHERE project_id = ? AND html = ? ORDER BY version_no DESC LIMIT 1`,
+          [projectId, currentHtml]
+        )
+        if (vr.length) {
+          ver = vr[0]
+        } else {
+          const [last] = await db.query(
+            'SELECT COALESCE(MAX(version_no),0) AS v FROM project_versions WHERE project_id = ?',
+            [projectId]
+          )
+          const no = last[0].v + 1
+          await db.query(
+            `INSERT INTO project_versions (id, project_id, version_no, html, prompt, credits_used)
+             VALUES (?,?,?,?,?,0)`,
+            [uuidv4(), projectId, no, currentHtml, no === 1 ? 'Initial version' : 'Deployed snapshot']
+          )
+          ver = { version_no: no, html: currentHtml }
+        }
+      }
+
+      html         = ver.html
       title        = title        || p.title
       templateName = templateName || p.template_name || p.subdomain || 'site'
     } else {
       if (!html || html.trim().length < 10) return res.status(400).json({ error: 'No HTML to deploy.' })
     }
 
-    console.log(`[GitHub] HTML to deploy: ${html.length} chars`)
-
-    // Inject view-tracking beacon before pushing to GitHub
-    if (projectId) {
+    // Tracking beacon (skip if the HTML already has it)
+    if (projectId && !html.includes(projectId)) {
       html = injectTrackingScript(html, projectId)
       console.log(`[GitHub] Tracking script injected for project ${projectId}`)
     }
 
-    // ...rest of function unchanged (folder path building, pushToGhPages, etc.)
-    // 3. Build namespaced folder path
-    //    Structure: user-{userId}/{templateSlug}/{projectId}/index.html
-    //    This ensures every user's sites are completely isolated.
+    // 3. Folder paths
     const templateSlug = toSlug(templateName || title || subdomain || 'site')
     const siteId       = projectId ? toSlug(String(projectId)) : `live-${Date.now()}`
-    const userSlug     = `user-${userId}`                          // ← namespaces by user
-    const folderPath   = `${userSlug}/${templateSlug}/${siteId}`   // ← full path in gh-pages
-    const filePath     = `${folderPath}/index.html`
-    console.log(`[GitHub] Target: gh-pages/${filePath}`)
+    const folderPath   = `user-${userId}/${templateSlug}/${siteId}`
 
-    // 4. Push files (.nojekyll + index.html)
-    await pushToGhPages(octokit, username, [
-      { path: '.nojekyll', content: '' },
-      { path: filePath,    content: html },
-    ], `Deploy: ${title || templateSlug} (user ${userId}) via Zater Web Studio`)
+    const files = [{ path: '.nojekyll', content: '' }]
+    if (ver) files.push({ path: `${folderPath}/v${ver.version_no}/index.html`, content: html })
+    if (isCurrent || !ver) files.push({ path: `${folderPath}/index.html`, content: html })
+
+    console.log(`[GitHub] Files: ${files.map(f => f.path).join(', ')}`)
+
+    // 4. Push (one commit for all files)
+    await pushToGhPages(
+      octokit, username, files,
+      `Deploy: ${title || templateSlug}${ver ? ` v${ver.version_no}` : ''} (user ${userId}) via Zater Web Studio`
+    )
 
     // 5. Enable Pages
     await enablePages(octokit, username)
 
-    // 6. Live URL
-    const liveUrl = `https://${username}.github.io/${REPO_NAME}/${folderPath}/`
+    // 6. URLs
+    const rootUrl    = `https://${username}.github.io/${REPO_NAME}/${folderPath}/`
+    const versionUrl = ver ? `${rootUrl}v${ver.version_no}/` : rootUrl
+    const liveUrl    = isCurrent ? rootUrl : versionUrl
     console.log(`[GitHub] 🌐 ${liveUrl}`)
 
-    // 7. Save to DB
+    // 7. Deployment record (non-fatal)
     try {
       await db.query(
         `INSERT INTO deployments (user_id, project_id, subdomain, repo_name, live_url, platform, deployed_at)
          VALUES (?, ?, ?, ?, ?, 'github_pages', NOW())
          ON DUPLICATE KEY UPDATE live_url = VALUES(live_url), deployed_at = NOW()`,
-        [userId, projectId || null, `${templateSlug}-${siteId}`.slice(0, 100), REPO_NAME, liveUrl]
+        [userId, projectId || null,
+         `${templateSlug}-${siteId}${ver ? `-v${ver.version_no}` : ''}`.slice(0, 100),
+         REPO_NAME, liveUrl]
       )
-      console.log(`[GitHub] ✅ Deployment record saved`)
     } catch (dbErr) {
       console.warn(`[GitHub] ⚠️ DB deployment record failed (non-fatal): ${dbErr.message}`)
     }
 
+    // 8. Save the version's URL, and stamp the project only if the current site was deployed
     try {
       if (projectId) {
-        await db.query(
-          'UPDATE projects SET github_url = ?, github_repo = ? WHERE id = ? AND user_id = ?',
-          [liveUrl, `${username}/${REPO_NAME}`, projectId, userId]
-        )
-        console.log(`[GitHub] ✅ Project stamped with github_url`)
+        if (ver) {
+          await db.query(
+            'UPDATE project_versions SET github_url = ?, deployed_at = NOW() WHERE project_id = ? AND version_no = ?',
+            [versionUrl, projectId, ver.version_no]
+          )
+        }
+        if (isCurrent) {
+          await db.query(
+            'UPDATE projects SET github_url = ?, github_repo = ? WHERE id = ? AND user_id = ?',
+            [rootUrl, `${username}/${REPO_NAME}`, projectId, userId]
+          )
+        } else {
+          await db.query(
+            'UPDATE projects SET github_repo = ? WHERE id = ? AND user_id = ?',
+            [`${username}/${REPO_NAME}`, projectId, userId]
+          )
+        }
+        console.log(`[GitHub] ✅ URLs saved`)
       }
     } catch (dbErr) {
-      console.warn(`[GitHub] ⚠️ Project stamp failed (non-fatal): ${dbErr.message}`)
+      console.warn(`[GitHub] ⚠️ URL save failed (non-fatal): ${dbErr.message}`)
     }
 
     console.log(`[GitHub] ✅ DEPLOY COMPLETE`)
     return res.json({
-      success: true, url: liveUrl, liveUrl,
+      success: true,
+      url: liveUrl, liveUrl,
+      rootUrl, versionUrl,
+      versionNo: ver?.version_no ?? null,
+      isCurrent,
       repoName: REPO_NAME, folder: folderPath,
       message: 'Deployed! GitHub Pages goes live in 1–3 minutes.',
     })

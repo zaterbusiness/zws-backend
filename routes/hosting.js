@@ -45,6 +45,32 @@ router.get('/check-live', protect, async (req, res) => {
     return res.json({ live: false, status: null, error: err.message })
   }
 })
+// GET /api/hosting/site-versions → { versions: { [projectId]: [{ version_no, github_url, deployed_at, prompt }] } }
+router.get('/site-versions', protect, async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT v.project_id, v.version_no, v.github_url, v.deployed_at, v.prompt
+       FROM project_versions v
+       JOIN projects p ON p.id = v.project_id
+       WHERE p.user_id = ? AND p.deleted_at IS NULL AND v.github_url IS NOT NULL
+       ORDER BY v.project_id, v.version_no DESC`,
+      [req.user.id]
+    )
+    const versions = {}
+    for (const r of rows) {
+      (versions[r.project_id] ||= []).push({
+        version_no:  r.version_no,
+        github_url:  r.github_url,
+        deployed_at: r.deployed_at,
+        prompt:      r.prompt,
+      })
+    }
+    res.json({ versions })
+  } catch (err) {
+    console.error('site-versions:', err.message)
+    res.status(500).json({ error: 'Failed to load versions.' })
+  }
+})
 router.get('/check-live', async (req, res) => {
   const { url } = req.query
   if (!url) return res.status(400).json({ live: false })

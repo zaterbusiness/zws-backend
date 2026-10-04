@@ -206,13 +206,14 @@ export const verifyAndFinalize = async (req, res) => {
 
       await query('UPDATE payments SET razorpay_payment_id=?, status=? WHERE phonepe_txn_id=?', [razorpay_payment_id, 'paid', razorpay_order_id])
 
-      return res.json({
-        status: 'paid',
-        message: `${creditsToAdd} credits added to your account!`,
-        creditsAdded: creditsToAdd,
-        newBalance: updatedUser.credits,
-        has_paid: true,
-      })
+      const u = await queryOne('SELECT has_paid FROM users WHERE id=?', [req.user.id])
+return res.json({
+  status: 'paid',
+  message: `${creditsToAdd} credits added to your account!`,
+  creditsAdded: creditsToAdd,
+  newBalance: updatedUser.credits,
+  has_paid: !!u?.has_paid,   // was: true
+})
     }
 
     res.status(400).json({ error: 'Unknown payment type.' })

@@ -430,7 +430,57 @@ export const deleteUser = async (req, res) => {
     res.json({ message: 'User deleted.' })
   } catch (err) { res.status(500).json({ error: 'Failed.' }) }
 }
+// ── GET /api/admin/edits ── every AI edit made on websites
+export const getEditHistory = async (req, res) => {
+  try {
+    const { search = '', page = 1, limit = 20 } = req.query
+    const offset = (Number(page) - 1) * Number(limit)
 
+    // 'Initial version' and 'Deployed snapshot' are auto-created, not real edits
+    const searchSql    = search ? 'AND (v.prompt LIKE ? OR p.title LIKE ? OR u.name LIKE ? OR u.email LIKE ?)' : ''
+    const searchParams = search ? Array(4).fill(`%${search}%`) : []
+    const baseParams   = ['Initial version', 'Deployed snapshot', ...searchParams]
+
+    const edits = await query(`
+      SELECT v.id, v.project_id, v.version_no,
+             v.prompt AS edit_prompt, v.credits_used, v.github_url, v.created_at,
+             p.title, p.prompt AS original_prompt, p.deleted_at,
+             u.id AS user_id, u.name AS user_name, u.email AS user_email,
+             COALESCE(u.avatar,'') AS user_avatar
+      FROM project_versions v
+      JOIN projects p ON p.id = v.project_id
+      JOIN users u    ON u.id = p.user_id
+      WHERE v.prompt NOT IN (?, ?) ${searchSql}
+      ORDER BY v.created_at DESC
+      LIMIT ${Number(limit)} OFFSET ${offset}
+    `, baseParams)
+
+    const [stats] = await query(`
+      SELECT COUNT(*)                       AS totalEdits,
+             COUNT(DISTINCT p.user_id)      AS totalUsers,
+             COUNT(DISTINCT v.project_id)   AS totalProjects,
+             COALESCE(SUM(v.credits_used),0) AS totalCredits
+      FROM project_versions v
+      JOIN projects p ON p.id = v.project_id
+      JOIN users u    ON u.id = p.user_id
+      WHERE v.prompt NOT IN (?, ?) ${searchSql}
+    `, baseParams)
+
+    res.json({
+      edits,
+      total: Number(stats.totalEdits),
+      stats: {
+        totalEdits:    Number(stats.totalEdits),
+        totalUsers:    Number(stats.totalUsers),
+        totalProjects: Number(stats.totalProjects),
+        totalCredits:  Number(stats.totalCredits),
+      },
+    })
+  } catch (err) {
+    console.error('getEditHistory:', err.sqlMessage || err.message)
+    res.status(500).json({ error: 'Failed to fetch edits.' })
+  }
+}
 // ── GET /api/admin/projects ───────────────────────────────────
 export const getProjects = async (req, res) => {
   try {
